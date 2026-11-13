@@ -8,50 +8,109 @@ package gvalid
 
 import (
 	"context"
-	"github.com/gogf/gf/i18n/gi18n"
+	"errors"
+	"reflect"
+
+	"github.com/gogf/gf/v2/i18n/gi18n"
+	"github.com/gogf/gf/v2/internal/reflection"
+	"github.com/gogf/gf/v2/internal/utils"
+	"github.com/gogf/gf/v2/text/gstr"
+	"github.com/gogf/gf/v2/util/gconv"
 )
 
 // Validator is the validation manager for chaining operations.
 type Validator struct {
-	ctx                              context.Context     // Context containing custom context variables.
-	i18nManager                      *gi18n.Manager      // I18n manager for error message translation.
-	key                              string              // Single validation key.
-	value                            interface{}         // Single validation value.
-	data                             interface{}         // Validation data, which is usually a map.
-	rules                            interface{}         // Custom validation data.
-	messages                         interface{}         // Custom validation error messages, which can be string or type of CustomMsg.
-	ruleFuncMap                      map[string]RuleFunc // ruleFuncMap stores custom rule functions for current Validator.
-	useDataInsteadOfObjectAttributes bool                // Using `data` as its validation source instead of attribute values from `Object`.
-	bail                             bool                // Stop validation after the first validation error.
+	i18nManager                       *gi18n.Manager      // I18n manager for error message translation.
+	data                              any                 // Validation data, which can be a map, struct or a certain value to be validated.
+	assoc                             any                 // Associated data, which is usually a map, for union validation.
+	rules                             any                 // Custom validation data.
+	messages                          any                 // Custom validation error messages, which can be string or type of CustomMsg.
+	ruleFuncMap                       map[string]RuleFunc // ruleFuncMap stores custom rule functions for current Validator.
+	useAssocInsteadOfObjectAttributes bool                // Using `assoc` as its validation source instead of attribute values from `Object`.
+	bail                              bool                // Stop validation after the first validation error.
+	foreach                           bool                // It tells the next validation using current value as an array and validates each of its element.
+	caseInsensitive                   bool                // Case-Insensitive configuration for those rules that need value comparison.
+	cache                             bool                // Enable the parsed rule value cache for the validation, which is disabled in default.
 }
 
 // New creates and returns a new Validator.
-func New() *Validator {
+//
+// The optional parameter `cached` specifies whether to enable the parsed rule
+// value cache for the validation, which is disabled in default, as the rule
+// values might be dynamically generated in user code and the process level
+// cache would then grow without bound. Enable it if the rule values are known
+// to be static, which is the case for the validation rules from struct tag,
+// as the framework does for HTTP request handling (see package `ghttp`).
+func New(cached ...bool) *Validator {
+	var cacheEnabled = false
+	if len(cached) > 0 {
+		cacheEnabled = cached[0]
+	}
 	return &Validator{
-		ctx:         context.TODO(),            // Initialize an empty context.
 		i18nManager: gi18n.Instance(),          // Use default i18n manager.
 		ruleFuncMap: make(map[string]RuleFunc), // Custom rule function storing map.
+		cache:       cacheEnabled,
 	}
 }
 
-// Clone creates and returns a new Validator which is a shallow copy of current one.
+// Run starts validating the given data with rules and messages.
+func (v *Validator) Run(ctx context.Context) Error {
+	if v.data == nil {
+		return newValidationErrorByStr(
+			internalParamsErrRuleName,
+			errors.New(`no data passed for validation`),
+		)
+	}
+
+	originValueAndKind := reflection.OriginValueAndKind(v.data)
+	switch originValueAndKind.OriginKind {
+	case reflect.Map:
+		isMapValidation := false
+		if v.rules == nil {
+			isMapValidation = true
+		} else if utils.IsMap(v.rules) || utils.IsSlice(v.rules) {
+			isMapValidation = true
+		}
+		if isMapValidation {
+			return v.doCheckMap(ctx, v.data)
+		}
+
+	case reflect.Struct:
+		isStructValidation := false
+		if v.rules == nil {
+			isStructValidation = true
+		} else if utils.IsMap(v.rules) || utils.IsSlice(v.rules) {
+			isStructValidation = true
+		}
+		if isStructValidation {
+			return v.doCheckStruct(ctx, v.data)
+		}
+	}
+
+	return v.doCheckValue(ctx, doCheckValueInput{
+		Name:      "",
+		Value:     v.data,
+		ValueType: reflect.TypeOf(v.data),
+		Rule:      gconv.String(v.rules),
+		Messages:  v.messages,
+		DataRaw:   v.assoc,
+		DataMap:   gconv.Map(v.assoc),
+	})
+}
+
+// Clone creates and returns a new Validator, which is a shallow copy of the current one.
 func (v *Validator) Clone() *Validator {
-	newValidator := New()
-	*newValidator = *v
-	return newValidator
+	newValidator := *v
+	return &newValidator
 }
 
 // I18n sets the i18n manager for the validator.
 func (v *Validator) I18n(i18nManager *gi18n.Manager) *Validator {
+	if i18nManager == nil {
+		return v
+	}
 	newValidator := v.Clone()
 	newValidator.i18nManager = i18nManager
-	return newValidator
-}
-
-// Ctx is a chaining operation function, which sets the context for next validation.
-func (v *Validator) Ctx(ctx context.Context) *Validator {
-	newValidator := v.Clone()
-	newValidator.ctx = ctx
 	return newValidator
 }
 
@@ -62,18 +121,49 @@ func (v *Validator) Bail() *Validator {
 	return newValidator
 }
 
+// Foreach tells the next validation using current value as an array and validates each of its element.
+// Note that this decorating rule takes effect just once for next validation rule, specially for single value validation.
+func (v *Validator) Foreach() *Validator {
+	newValidator := v.Clone()
+	newValidator.foreach = true
+	return newValidator
+}
+
+// Ci sets the mark for Case-Insensitive for those rules that need value comparison.
+func (v *Validator) Ci() *Validator {
+	newValidator := v.Clone()
+	newValidator.caseInsensitive = true
+	return newValidator
+}
+
 // Data is a chaining operation function, which sets validation data for current operation.
-// The parameter `data` usually be type of map, which specifies the parameter map used in validation.
-// Calling this function also sets `useDataInsteadOfObjectAttributes` true no mather the `data` is nil or not.
-func (v *Validator) Data(data interface{}) *Validator {
+func (v *Validator) Data(data any) *Validator {
+	if data == nil {
+		return v
+	}
 	newValidator := v.Clone()
 	newValidator.data = data
-	newValidator.useDataInsteadOfObjectAttributes = true
+	return newValidator
+}
+
+// Assoc is a chaining operation function, which sets associated validation data for current operation.
+// The optional parameter `assoc` is usually type of map, which specifies the parameter map used in union validation.
+// Calling this function with `assoc` also sets `useAssocInsteadOfObjectAttributes` true
+func (v *Validator) Assoc(assoc any) *Validator {
+	if assoc == nil {
+		return v
+	}
+	newValidator := v.Clone()
+	newValidator.assoc = assoc
+	newValidator.useAssocInsteadOfObjectAttributes = true
 	return newValidator
 }
 
 // Rules is a chaining operation function, which sets custom validation rules for current operation.
-func (v *Validator) Rules(rules interface{}) *Validator {
+func (v *Validator) Rules(rules any) *Validator {
+	if rules == nil {
+		return v
+	}
 	newValidator := v.Clone()
 	newValidator.rules = rules
 	return newValidator
@@ -82,7 +172,10 @@ func (v *Validator) Rules(rules interface{}) *Validator {
 // Messages is a chaining operation function, which sets custom error messages for current operation.
 // The parameter `messages` can be type of string/[]string/map[string]string. It supports sequence in error result
 // if `rules` is type of []string.
-func (v *Validator) Messages(messages interface{}) *Validator {
+func (v *Validator) Messages(messages any) *Validator {
+	if messages == nil {
+		return v
+	}
 	newValidator := v.Clone()
 	newValidator.messages = messages
 	return newValidator
@@ -97,6 +190,9 @@ func (v *Validator) RuleFunc(rule string, f RuleFunc) *Validator {
 
 // RuleFuncMap registers multiple custom rule functions to current Validator.
 func (v *Validator) RuleFuncMap(m map[string]RuleFunc) *Validator {
+	if m == nil {
+		return v
+	}
 	newValidator := v.Clone()
 	for k, v := range m {
 		newValidator.ruleFuncMap[k] = v
@@ -104,11 +200,24 @@ func (v *Validator) RuleFuncMap(m map[string]RuleFunc) *Validator {
 	return newValidator
 }
 
-// getRuleFunc retrieves and returns the custom rule function for specified rule.
-func (v *Validator) getRuleFunc(rule string) RuleFunc {
+// getCustomRuleFunc retrieves and returns the custom rule function for specified rule.
+func (v *Validator) getCustomRuleFunc(rule string) RuleFunc {
 	ruleFunc := v.ruleFuncMap[rule]
 	if ruleFunc == nil {
 		ruleFunc = customRuleFuncMap[rule]
 	}
 	return ruleFunc
+}
+
+// checkRuleRequired checks and returns whether the given `rule` is required even it is nil or empty.
+func (v *Validator) checkRuleRequired(rule string) bool {
+	// Default required rules.
+	if gstr.HasPrefix(rule, requiredRulesPrefix) {
+		return true
+	}
+	// All custom validation rules are required rules.
+	if _, ok := customRuleFuncMap[rule]; ok {
+		return true
+	}
+	return false
 }

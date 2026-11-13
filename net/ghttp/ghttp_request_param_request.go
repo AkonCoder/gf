@@ -7,181 +7,71 @@
 package ghttp
 
 import (
-	"github.com/gogf/gf/container/gvar"
-	"github.com/gogf/gf/internal/empty"
-	"github.com/gogf/gf/internal/structs"
-	"github.com/gogf/gf/util/gconv"
-	"github.com/gogf/gf/util/gutil"
+	"reflect"
+
+	"github.com/gogf/gf/v2/container/gvar"
+	"github.com/gogf/gf/v2/net/goai"
+	"github.com/gogf/gf/v2/os/gstructs"
+	"github.com/gogf/gf/v2/util/gconv"
+	"github.com/gogf/gf/v2/util/gutil"
 )
 
-// GetRequest retrieves and returns the parameter named <key> passed from client and
-// custom params as interface{}, no matter what HTTP method the client is using. The
-// parameter <def> specifies the default value if the <key> does not exist.
+// GetRequest retrieves and returns the parameter named `key` passed from the client and
+// custom params as any, no matter what HTTP method the client is using. The
+// parameter `def` specifies the default value if the `key` does not exist.
 //
 // GetRequest is one of the most commonly used functions for retrieving parameters.
 //
-// Note that if there're multiple parameters with the same name, the parameters are
+// Note that if there are multiple parameters with the same name, the parameters are
 // retrieved and overwrote in order of priority: router < query < body < form < custom.
-func (r *Request) GetRequest(key string, def ...interface{}) interface{} {
+func (r *Request) GetRequest(key string, def ...any) *gvar.Var {
 	value := r.GetParam(key)
-	if value == nil {
+	if value.IsNil() {
 		value = r.GetForm(key)
 	}
-	if value == nil {
+	if value.IsNil() {
 		r.parseBody()
 		if len(r.bodyMap) > 0 {
-			value = r.bodyMap[key]
+			if v := r.bodyMap[key]; v != nil {
+				value = gvar.New(v)
+			}
 		}
 	}
-	if value == nil {
+	if value.IsNil() {
 		value = r.GetQuery(key)
 	}
-	if value == nil {
-		value = r.GetRouterValue(key)
+	if value.IsNil() {
+		value = r.GetRouter(key)
 	}
-	if value != nil {
+	if !value.IsNil() {
 		return value
 	}
 	if len(def) > 0 {
-		return def[0]
+		return gvar.New(def[0])
 	}
-	return value
+	return nil
 }
 
-// GetRequestVar retrieves and returns the parameter named <key> passed from client and
-// custom params as gvar.Var, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestVar(key string, def ...interface{}) *gvar.Var {
-	return gvar.New(r.GetRequest(key, def...))
-}
-
-// GetRequestString retrieves and returns the parameter named <key> passed from client and
-// custom params as string, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestString(key string, def ...interface{}) string {
-	return r.GetRequestVar(key, def...).String()
-}
-
-// GetRequestBool retrieves and returns the parameter named <key> passed from client and
-// custom params as bool, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestBool(key string, def ...interface{}) bool {
-	return r.GetRequestVar(key, def...).Bool()
-}
-
-// GetRequestInt retrieves and returns the parameter named <key> passed from client and
-// custom params as int, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestInt(key string, def ...interface{}) int {
-	return r.GetRequestVar(key, def...).Int()
-}
-
-// GetRequestInt32 retrieves and returns the parameter named <key> passed from client and
-// custom params as int32, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestInt32(key string, def ...interface{}) int32 {
-	return r.GetRequestVar(key, def...).Int32()
-}
-
-// GetRequestInt64 retrieves and returns the parameter named <key> passed from client and
-// custom params as int64, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestInt64(key string, def ...interface{}) int64 {
-	return r.GetRequestVar(key, def...).Int64()
-}
-
-// GetRequestInts retrieves and returns the parameter named <key> passed from client and
-// custom params as []int, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestInts(key string, def ...interface{}) []int {
-	return r.GetRequestVar(key, def...).Ints()
-}
-
-// GetRequestUint retrieves and returns the parameter named <key> passed from client and
-// custom params as uint, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestUint(key string, def ...interface{}) uint {
-	return r.GetRequestVar(key, def...).Uint()
-}
-
-// GetRequestUint32 retrieves and returns the parameter named <key> passed from client and
-// custom params as uint32, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestUint32(key string, def ...interface{}) uint32 {
-	return r.GetRequestVar(key, def...).Uint32()
-}
-
-// GetRequestUint64 retrieves and returns the parameter named <key> passed from client and
-// custom params as uint64, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestUint64(key string, def ...interface{}) uint64 {
-	return r.GetRequestVar(key, def...).Uint64()
-}
-
-// GetRequestFloat32 retrieves and returns the parameter named <key> passed from client and
-// custom params as float32, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestFloat32(key string, def ...interface{}) float32 {
-	return r.GetRequestVar(key, def...).Float32()
-}
-
-// GetRequestFloat64 retrieves and returns the parameter named <key> passed from client and
-// custom params as float64, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestFloat64(key string, def ...interface{}) float64 {
-	return r.GetRequestVar(key, def...).Float64()
-}
-
-// GetRequestFloats retrieves and returns the parameter named <key> passed from client and
-// custom params as []float64, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestFloats(key string, def ...interface{}) []float64 {
-	return r.GetRequestVar(key, def...).Floats()
-}
-
-// GetRequestArray retrieves and returns the parameter named <key> passed from client and
-// custom params as []string, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestArray(key string, def ...interface{}) []string {
-	return r.GetRequestVar(key, def...).Strings()
-}
-
-// GetRequestStrings retrieves and returns the parameter named <key> passed from client and
-// custom params as []string, no matter what HTTP method the client is using. The parameter
-// <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestStrings(key string, def ...interface{}) []string {
-	return r.GetRequestVar(key, def...).Strings()
-}
-
-// GetRequestInterfaces retrieves and returns the parameter named <key> passed from client
-// and custom params as []interface{}, no matter what HTTP method the client is using. The
-// parameter <def> specifies the default value if the <key> does not exist.
-func (r *Request) GetRequestInterfaces(key string, def ...interface{}) []interface{} {
-	return r.GetRequestVar(key, def...).Interfaces()
-}
-
-// GetRequestMap retrieves and returns all parameters passed from client and custom params
-// as map, no matter what HTTP method the client is using. The parameter <kvMap> specifies
+// GetRequestMap retrieves and returns all parameters passed from the client and custom params
+// as the map, no matter what HTTP method the client is using. The parameter `kvMap` specifies
 // the keys retrieving from client parameters, the associated values are the default values
 // if the client does not pass the according keys.
 //
 // GetRequestMap is one of the most commonly used functions for retrieving parameters.
 //
-// Note that if there're multiple parameters with the same name, the parameters are retrieved
+// Note that if there are multiple parameters with the same name, the parameters are retrieved
 // and overwrote in order of priority: router < query < body < form < custom.
-func (r *Request) GetRequestMap(kvMap ...map[string]interface{}) map[string]interface{} {
+func (r *Request) GetRequestMap(kvMap ...map[string]any) map[string]any {
 	r.parseQuery()
 	r.parseForm()
 	r.parseBody()
-	var ok, filter bool
-	var length int
+	var (
+		ok, filter bool
+	)
 	if len(kvMap) > 0 && kvMap[0] != nil {
-		length = len(kvMap[0])
 		filter = true
-	} else {
-		length = len(r.routerMap) + len(r.queryMap) + len(r.formMap) + len(r.bodyMap) + len(r.paramsMap)
 	}
-	m := make(map[string]interface{}, length)
+	m := make(map[string]any)
 	for k, v := range r.routerMap {
 		if filter {
 			if _, ok = kvMap[0][k]; !ok {
@@ -206,13 +96,16 @@ func (r *Request) GetRequestMap(kvMap ...map[string]interface{}) map[string]inte
 		}
 		m[k] = v
 	}
-	for k, v := range r.bodyMap {
-		if filter {
-			if _, ok = kvMap[0][k]; !ok {
-				continue
+	// The form map might be the body map itself, which has been merged above.
+	if !sameMap(r.formMap, r.bodyMap) {
+		for k, v := range r.bodyMap {
+			if filter {
+				if _, ok = kvMap[0][k]; !ok {
+					continue
+				}
 			}
+			m[k] = v
 		}
-		m[k] = v
 	}
 	for k, v := range r.paramsMap {
 		if filter {
@@ -221,6 +114,16 @@ func (r *Request) GetRequestMap(kvMap ...map[string]interface{}) map[string]inte
 			}
 		}
 		m[k] = v
+	}
+	// File uploading.
+	if r.MultipartForm != nil {
+		for name := range r.MultipartForm.File {
+			if uploadFiles := r.GetUploadFiles(name); len(uploadFiles) == 1 {
+				m[name] = uploadFiles[0]
+			} else {
+				m[name] = uploadFiles
+			}
+		}
 	}
 	// Check none exist parameters and assign it with default value.
 	if filter {
@@ -233,11 +136,11 @@ func (r *Request) GetRequestMap(kvMap ...map[string]interface{}) map[string]inte
 	return m
 }
 
-// GetRequestMapStrStr retrieves and returns all parameters passed from client and custom
+// GetRequestMapStrStr retrieve and returns all parameters passed from the client and custom
 // params as map[string]string, no matter what HTTP method the client is using. The parameter
-// <kvMap> specifies the keys retrieving from client parameters, the associated values are the
+// `kvMap` specifies the keys retrieving from client parameters, the associated values are the
 // default values if the client does not pass.
-func (r *Request) GetRequestMapStrStr(kvMap ...map[string]interface{}) map[string]string {
+func (r *Request) GetRequestMapStrStr(kvMap ...map[string]any) map[string]string {
 	requestMap := r.GetRequestMap(kvMap...)
 	if len(requestMap) > 0 {
 		m := make(map[string]string, len(requestMap))
@@ -249,11 +152,11 @@ func (r *Request) GetRequestMapStrStr(kvMap ...map[string]interface{}) map[strin
 	return nil
 }
 
-// GetRequestMapStrVar retrieves and returns all parameters passed from client and custom
+// GetRequestMapStrVar retrieve and returns all parameters passed from the client and custom
 // params as map[string]*gvar.Var, no matter what HTTP method the client is using. The parameter
-// <kvMap> specifies the keys retrieving from client parameters, the associated values are the
+// `kvMap` specifies the keys retrieving from client parameters, the associated values are the
 // default values if the client does not pass.
-func (r *Request) GetRequestMapStrVar(kvMap ...map[string]interface{}) map[string]*gvar.Var {
+func (r *Request) GetRequestMapStrVar(kvMap ...map[string]any) map[string]*gvar.Var {
 	requestMap := r.GetRequestMap(kvMap...)
 	if len(requestMap) > 0 {
 		m := make(map[string]*gvar.Var, len(requestMap))
@@ -265,47 +168,166 @@ func (r *Request) GetRequestMapStrVar(kvMap ...map[string]interface{}) map[strin
 	return nil
 }
 
-// GetRequestStruct retrieves all parameters passed from client and custom params no matter
-// what HTTP method the client is using, and converts them to given struct object. Note that
-// the parameter <pointer> is a pointer to the struct object.
-// The optional parameter <mapping> is used to specify the key to attribute mapping.
-func (r *Request) GetRequestStruct(pointer interface{}, mapping ...map[string]string) error {
+// GetRequestStruct retrieves all parameters passed from the client and custom params no matter
+// what HTTP method the client is using, and converts them to give the struct object. Note that
+// the parameter `pointer` is a pointer to the struct object.
+// The optional parameter `mapping` is used to specify the key to attribute mapping.
+func (r *Request) GetRequestStruct(pointer any, mapping ...map[string]string) error {
 	_, err := r.doGetRequestStruct(pointer, mapping...)
 	return err
 }
 
-func (r *Request) doGetRequestStruct(pointer interface{}, mapping ...map[string]string) (data map[string]interface{}, err error) {
+func (r *Request) doGetRequestStruct(pointer any, mapping ...map[string]string) (data map[string]any, err error) {
 	data = r.GetRequestMap()
-	if data == nil {
-		data = map[string]interface{}{}
+	if err = r.GetError(); err != nil {
+		return nil, err
 	}
-	if err := r.mergeDefaultStructValue(data, pointer); err != nil {
+	if data == nil {
+		data = map[string]any{}
+	}
+	// All values of the repeated query parameters for the slice fields.
+	r.mergeRepeatedQueryValues(data, pointer, parseTypeRequest)
+
+	// A field tagged with `body:"*"` represents the complete request body. Before converting,
+	// remove the request parameter that is named exactly after the field tag name, as the tag
+	// name is matched with a higher priority than the field name by the struct converting,
+	// which would otherwise overwrite the body array. Both names are resolved at router
+	// registering time, see checkAndCreateReqBodyField.
+	// reqBodyFieldName is empty when current request has no serving handler, for example a
+	// request matching no route, so the tag name below is read only for a matched handler.
+	if r.reqBodyFieldName() != "" {
+		delete(data, r.serveHandler.Handler.Info.ReqBodyFieldTagName)
+	}
+
+	// `in` Tag Struct values.
+	if err = r.mergeInTagStructValue(data); err != nil {
 		return data, nil
 	}
+
+	// Default struct values.
+	if err = r.mergeDefaultStructValue(data, pointer); err != nil {
+		return data, nil
+	}
+
+	// The request struct field tagged with `body:"*"` receives the whole request body, which
+	// is a JSON array instead of being split into the request parameters.
+	// The field name comes from reqBodyFieldName, which is empty when there is no serving handler.
+	if bodyFieldName := r.reqBodyFieldName(); bodyFieldName != "" {
+		if r.bodyArray != nil {
+			data[bodyFieldName] = r.bodyArray
+		} else if r.bodyMap != nil || r.MultipartForm != nil {
+			// The JSON object, the form parameters and the multipart forms are not acceptable
+			// for such field, which are reported as an invalid parameter instead of being
+			// silently ignored with the field left as a nil slice.
+			return nil, newArrayRequestBodyError(bodyFieldName)
+		} else {
+			// There's no body at all. The nil value occupies the field name, so that the field
+			// is bound to its zero value before the request parameters of similar names (case
+			// or symbol variants) could be fuzzy matched to it.
+			data[bodyFieldName] = nil
+		}
+	}
+
 	return data, gconv.Struct(data, pointer, mapping...)
 }
 
 // mergeDefaultStructValue merges the request parameters with default values from struct tag definition.
-func (r *Request) mergeDefaultStructValue(data map[string]interface{}, pointer interface{}) error {
-	tagFields, err := structs.TagFields(pointer, defaultValueTags)
+//
+// The default tag usage is prechecked at handler registration, and that precheck only covers the
+// registered request struct fields. The pointer scan below still runs when those fields are empty,
+// which is the case of a plain handler function and of a request matching no route.
+func (r *Request) mergeDefaultStructValue(data map[string]any, pointer any) error {
+	// A serving handler with registered fields can skip the pointer scan. The precheck is false
+	// when none of those fields uses the default tag. A handler without registered fields, or a
+	// request without a serving handler, keeps the scan below.
+	fields := r.reqStructFields()
+	if len(fields) > 0 {
+		if tags, ok := r.reqStructTags(); ok && !tags.HasDefault {
+			return nil
+		}
+		for _, field := range fields {
+			if tagValue := field.TagDefault(); tagValue != "" {
+				mergeTagValueWithFoundKey(data, false, field.Name(), field.Name(), tagValue)
+			}
+		}
+		return nil
+	}
+
+	// provide non strict routing
+	tagFields, err := gstructs.TagFields(pointer, defaultValueTags)
 	if err != nil {
 		return err
 	}
 	if len(tagFields) > 0 {
+		for _, field := range tagFields {
+			mergeTagValueWithFoundKey(data, false, field.Name(), field.Name(), field.TagValue)
+		}
+	}
+
+	return nil
+}
+
+// mergeInTagStructValue merges the request parameters with header or cookie values from struct `in` tag definition.
+func (r *Request) mergeInTagStructValue(data map[string]any) error {
+	// Nothing to do as no field uses the `in` tag, which is prechecked at handler registration.
+	// A request without a serving handler has no registered fields either.
+	tags, ok := r.reqStructTags()
+	if !ok || !tags.HasIn {
+		return nil
+	}
+	fields := r.reqStructFields()
+	var (
+		headerMap = make(map[string]any)
+		cookieMap = make(map[string]any)
+	)
+
+	for k, v := range r.Header {
+		if len(v) > 0 {
+			headerMap[k] = v[0]
+		}
+	}
+
+	for _, cookie := range r.Cookies() {
+		cookieMap[cookie.Name] = cookie.Value
+	}
+
+	for _, field := range fields {
 		var (
 			foundKey   string
-			foundValue interface{}
+			foundValue any
 		)
-		for _, field := range tagFields {
-			foundKey, foundValue = gutil.MapPossibleItemByKey(data, field.Name())
-			if foundKey == "" {
-				data[field.Name()] = field.TagValue
-			} else {
-				if empty.IsEmpty(foundValue) {
-					data[foundKey] = field.TagValue
-				}
+		if tagValue := field.TagIn(); tagValue != "" {
+			findKey := field.TagPriorityName()
+			switch tagValue {
+			case goai.ParameterInHeader:
+				foundKey, foundValue = gutil.MapPossibleItemByKey(headerMap, findKey)
+			case goai.ParameterInCookie:
+				foundKey, foundValue = gutil.MapPossibleItemByKey(cookieMap, findKey)
+			}
+			if foundKey != "" {
+				mergeTagValueWithFoundKey(data, true, foundKey, field.Name(), foundValue)
 			}
 		}
 	}
 	return nil
+}
+
+// sameMap checks whether the two maps are the same map object.
+// Note that maps are not comparable in Go, it here compares the underlying map pointers.
+func sameMap(m1, m2 map[string]any) bool {
+	if m1 == nil || m2 == nil {
+		return false
+	}
+	return reflect.ValueOf(m1).Pointer() == reflect.ValueOf(m2).Pointer()
+}
+
+// mergeTagValueWithFoundKey merges the request parameters when the key does not exist in the map or overwritten is true or the value is nil.
+func mergeTagValueWithFoundKey(data map[string]any, overwritten bool, findKey string, fieldName string, tagValue any) {
+	if foundKey, foundValue := gutil.MapPossibleItemByKey(data, findKey); foundKey == "" {
+		data[fieldName] = tagValue
+	} else {
+		if overwritten || foundValue == nil {
+			data[foundKey] = tagValue
+		}
+	}
 }

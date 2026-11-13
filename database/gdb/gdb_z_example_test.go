@@ -9,12 +9,13 @@ package gdb_test
 import (
 	"context"
 
-	"github.com/gogf/gf/database/gdb"
-	"github.com/gogf/gf/frame/g"
+	"github.com/gogf/gf/v2/database/gdb"
+	"github.com/gogf/gf/v2/frame/g"
 )
 
-func Example_transaction() {
-	db.Transaction(context.TODO(), func(ctx context.Context, tx *gdb.TX) error {
+// ExampleDB_Transaction demonstrates the usage of transaction in gdb.
+func ExampleDB_Transaction() {
+	g.DB().Transaction(context.TODO(), func(ctx context.Context, tx gdb.TX) error {
 		// user
 		result, err := tx.Insert("user", g.Map{
 			"passport": "john",

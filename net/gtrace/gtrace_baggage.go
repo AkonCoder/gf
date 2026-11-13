@@ -8,10 +8,12 @@ package gtrace
 
 import (
 	"context"
-	"github.com/gogf/gf/container/gmap"
-	"github.com/gogf/gf/container/gvar"
-	"github.com/gogf/gf/util/gconv"
+
 	"go.opentelemetry.io/otel/baggage"
+
+	"github.com/gogf/gf/v2/container/gmap"
+	"github.com/gogf/gf/v2/container/gvar"
+	"github.com/gogf/gf/v2/util/gconv"
 )
 
 // Baggage holds the data through all tracing spans.
@@ -36,7 +38,7 @@ func (b *Baggage) Ctx() context.Context {
 
 // SetValue is a convenient function for adding one key-value pair to baggage.
 // Note that it uses attribute.Any to set the key-value pair.
-func (b *Baggage) SetValue(key string, value interface{}) context.Context {
+func (b *Baggage) SetValue(key string, value any) context.Context {
 	member, _ := baggage.NewMember(key, gconv.String(value))
 	bag, _ := baggage.New(member)
 	b.ctx = baggage.ContextWithBaggage(b.ctx, bag)
@@ -45,7 +47,7 @@ func (b *Baggage) SetValue(key string, value interface{}) context.Context {
 
 // SetMap is a convenient function for adding map key-value pairs to baggage.
 // Note that it uses attribute.Any to set the key-value pair.
-func (b *Baggage) SetMap(data map[string]interface{}) context.Context {
+func (b *Baggage) SetMap(data map[string]any) context.Context {
 	members := make([]baggage.Member, 0)
 	for k, v := range data {
 		member, _ := baggage.NewMember(k, gconv.String(v))

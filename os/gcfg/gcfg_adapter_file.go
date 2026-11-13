@@ -1,0 +1,467 @@
+// Copyright GoFrame Author(https://goframe.org). All Rights Reserved.
+//
+// This Source Code Form is subject to the terms of the MIT License.
+// If a copy of the MIT was not distributed with this file,
+// You can obtain one at https://github.com/gogf/gf.
+
+package gcfg
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/gogf/gf/v2/container/garray"
+	"github.com/gogf/gf/v2/container/gmap"
+	"github.com/gogf/gf/v2/container/gtype"
+	"github.com/gogf/gf/v2/container/gvar"
+	"github.com/gogf/gf/v2/encoding/gjson"
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/internal/command"
+	"github.com/gogf/gf/v2/internal/intlog"
+	"github.com/gogf/gf/v2/os/gfile"
+	"github.com/gogf/gf/v2/os/gfsnotify"
+	"github.com/gogf/gf/v2/os/gres"
+	"github.com/gogf/gf/v2/util/gmode"
+	"github.com/gogf/gf/v2/util/gutil"
+)
+
+var (
+	// Compile-time checking for interface implementation.
+	_ Adapter        = (*AdapterFile)(nil)
+	_ WatcherAdapter = (*AdapterFile)(nil)
+)
+
+// AdapterFile implements interface Adapter using file.
+type AdapterFile struct {
+	defaultFileNameOrPath *gtype.String                    // Default configuration file name or file path.
+	searchPaths           *garray.StrArray                 // Searching the path array.
+	jsonMap               *gmap.KVMap[string, *gjson.Json] // The parsed JSON objects for configuration files.
+	violenceCheck         bool                             // Whether it does violence check in value index searching. It affects the performance when set true(false in default).
+	watchers              *WatcherRegistry                 // Watchers for watching file changes.
+	watcherMutex          sync.Mutex                       // Mutex for file watcher callback tracking.
+	watcherRegistrations  map[string]*fileWatcher          // Current watcher registration for each configuration file.
+}
+
+// fileWatcher tracks the callback registration and its generation token for a configuration file.
+type fileWatcher struct {
+	token      *int
+	callbackID int
+	watcher    *gfsnotify.Watcher
+}
+
+const (
+	// fileWatcherRearmRetryInterval is the delay between attempts to restore a replaced file watch.
+	fileWatcherRearmRetryInterval = time.Millisecond
+	// fileWatcherRearmRetryCount bounds re-arm attempts when a watched file is removed permanently.
+	fileWatcherRearmRetryCount = 100
+)
+
+const (
+	commandEnvKeyForFile = "gf.gcfg.file" // commandEnvKeyForFile is the configuration key for command argument or environment configuring file name.
+	commandEnvKeyForPath = "gf.gcfg.path" // commandEnvKeyForPath is the configuration key for command argument or environment configuring directory path.
+)
+
+var (
+	supportedFileTypes     = []string{"toml", "yaml", "yml", "json", "ini", "xml", "properties"} // All supported file types suffixes.
+	checker                = func(v *Config) bool { return v == nil }
+	localInstances         = gmap.NewKVMapWithChecker[string, *Config](checker, true) // Instances map containing configuration instances.
+	customConfigContentMap = gmap.NewStrStrMap(true)                                  // Customized configuration content.
+
+	// Prefix array for trying searching in resource manager.
+	resourceTryFolders = []string{
+		"", "/", "config/", "config", "/config", "/config/",
+		"manifest/config/", "manifest/config", "/manifest/config", "/manifest/config/",
+	}
+
+	// Prefix array for trying searching in the local system.
+	localSystemTryFolders = []string{"", "config/", "manifest/config"}
+
+	// jsonMapChecker is the checker for JSON map.
+	jsonMapChecker = func(v *gjson.Json) bool { return v == nil }
+)
+
+// NewAdapterFile returns a new configuration management object.
+// The parameter `file` specifies the default configuration file name for reading.
+func NewAdapterFile(fileNameOrPath ...string) (*AdapterFile, error) {
+	var (
+		err                error
+		usedFileNameOrPath = DefaultConfigFileName
+	)
+	if len(fileNameOrPath) > 0 {
+		usedFileNameOrPath = fileNameOrPath[0]
+	} else {
+		// Custom default configuration file name from command line or environment.
+		if customFile := command.GetOptWithEnv(commandEnvKeyForFile); customFile != "" {
+			usedFileNameOrPath = customFile
+		}
+	}
+	config := &AdapterFile{
+		defaultFileNameOrPath: gtype.NewString(usedFileNameOrPath),
+		searchPaths:           garray.NewStrArray(true),
+		jsonMap:               gmap.NewKVMapWithChecker[string, *gjson.Json](jsonMapChecker, true),
+		watchers:              NewWatcherRegistry(),
+		watcherRegistrations:  make(map[string]*fileWatcher),
+	}
+	// Customized dir path from env/cmd.
+	if customPath := command.GetOptWithEnv(commandEnvKeyForPath); customPath != "" {
+		if gfile.Exists(customPath) {
+			if err = config.SetPath(customPath); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, gerror.Newf(`configuration directory path "%s" does not exist`, customPath)
+		}
+	} else {
+		// ================================================================================
+		// Automatic searching directories.
+		// It does not affect adapter object cresting if these directories do not exist.
+		// ================================================================================
+
+		// Dir path of working dir.
+		if err = config.AddPath(gfile.Pwd()); err != nil {
+			intlog.Errorf(context.TODO(), `%+v`, err)
+		}
+
+		// Dir path of the main package.
+		if mainPath := gfile.MainPkgPath(); mainPath != "" && gfile.Exists(mainPath) {
+			if err = config.AddPath(mainPath); err != nil {
+				intlog.Errorf(context.TODO(), `%+v`, err)
+			}
+		}
+
+		// Dir path of binary.
+		if selfPath := gfile.SelfDir(); selfPath != "" && gfile.Exists(selfPath) {
+			if err = config.AddPath(selfPath); err != nil {
+				intlog.Errorf(context.TODO(), `%+v`, err)
+			}
+		}
+	}
+	return config, nil
+}
+
+// SetViolenceCheck sets whether to perform hierarchical conflict checking.
+// This feature needs to be enabled when there is a level symbol in the key name.
+// It is off in default.
+//
+// Note that turning on this feature is quite expensive, and it is not recommended
+// allowing separators in the key names. It is best to avoid this on the application side.
+func (a *AdapterFile) SetViolenceCheck(check bool) {
+	a.violenceCheck = check
+	a.Clear()
+}
+
+// SetFileName sets the default configuration file name.
+func (a *AdapterFile) SetFileName(fileNameOrPath string) {
+	a.defaultFileNameOrPath.Set(fileNameOrPath)
+}
+
+// GetFileName returns the default configuration file name.
+func (a *AdapterFile) GetFileName() string {
+	return a.defaultFileNameOrPath.String()
+}
+
+// Get retrieves and returns value by specified `pattern`.
+// It returns all values of the current JSON object if `pattern` is given empty or string ".".
+// It returns nil if no value found by `pattern`.
+//
+// We can also access slice item by its index number in `pattern` like:
+// "list.10", "array.0.name", "array.0.1.id".
+//
+// It returns a default value specified by `def` if value for `pattern` is not found.
+func (a *AdapterFile) Get(ctx context.Context, pattern string) (value any, err error) {
+	j, err := a.getJson()
+	if err != nil {
+		return nil, err
+	}
+	if j != nil {
+		return j.Get(pattern).Val(), nil
+	}
+	return nil, nil
+}
+
+// Set sets value with specified `pattern`.
+// It supports hierarchical data access by char separator, which is '.' in default.
+// It is commonly used to update certain configuration values in runtime.
+// Note that it is not recommended using `Set` configuration at runtime as the configuration would be
+// automatically refreshed if the underlying configuration file changed.
+func (a *AdapterFile) Set(pattern string, value any) error {
+	j, err := a.getJson()
+	if err != nil {
+		return err
+	}
+	if j != nil {
+		err = j.Set(pattern, value)
+		if err != nil {
+			return err
+		}
+	}
+	fileName := a.GetFileName()
+	filePath, _ := a.GetFilePath(fileName)
+	fileType := gfile.ExtName(fileName)
+	adapterCtx := NewAdapterFileCtx().WithOperation(OperationSet).WithKey(pattern).WithValue(value).
+		WithFileName(fileName).WithFilePath(filePath).WithFileType(fileType)
+	a.notifyWatchers(adapterCtx.Ctx)
+	return nil
+}
+
+// Data retrieves and returns all configuration data as map type.
+func (a *AdapterFile) Data(ctx context.Context) (data map[string]any, err error) {
+	j, err := a.getJson()
+	if err != nil {
+		return nil, err
+	}
+	if j != nil {
+		return j.Var().Map(), nil
+	}
+	return nil, nil
+}
+
+// MustGet acts as a function, but it panics if error occurs.
+func (a *AdapterFile) MustGet(ctx context.Context, pattern string) *gvar.Var {
+	v, err := a.Get(ctx, pattern)
+	if err != nil {
+		panic(err)
+	}
+	return gvar.New(v)
+}
+
+// Clear removes all parsed configuration files content cache,
+// which will force reload configuration content from the file.
+func (a *AdapterFile) Clear() {
+	a.jsonMap.Clear()
+	fileName := a.GetFileName()
+	filePath, _ := a.GetFilePath(fileName)
+	fileType := gfile.ExtName(fileName)
+	adapterFileCtx := NewAdapterFileCtx().WithOperation(OperationClear).WithFileName(fileName).WithFilePath(filePath).WithFileType(fileType)
+	a.notifyWatchers(adapterFileCtx.Ctx)
+}
+
+// Dump prints current JSON object with more manually readable.
+func (a *AdapterFile) Dump() {
+	if j, _ := a.getJson(); j != nil {
+		j.Dump()
+	}
+}
+
+// Available checks and returns whether configuration of given `file` is available.
+func (a *AdapterFile) Available(ctx context.Context, fileName ...string) bool {
+	checkFileName := gutil.GetOrDefaultStr(a.defaultFileNameOrPath.String(), fileName...)
+	// Custom configuration content exists.
+	if a.GetContent(checkFileName) != "" {
+		return true
+	}
+	// Configuration file exists in the system path.
+	if path, _ := a.GetFilePath(checkFileName); path != "" {
+		return true
+	}
+	return false
+}
+
+// autoCheckAndAddMainPkgPathToSearchPaths automatically checks and adds the directory path of package main
+// to the searching path list if it's currently in the development environment.
+func (a *AdapterFile) autoCheckAndAddMainPkgPathToSearchPaths() {
+	if gmode.IsDevelop() {
+		mainPkgPath := gfile.MainPkgPath()
+		if mainPkgPath != "" {
+			if !a.searchPaths.Contains(mainPkgPath) {
+				a.searchPaths.Append(mainPkgPath)
+			}
+		}
+	}
+}
+
+// getJson returns a *gjson.Json object for the specified `file` content.
+// It would print error if file reading fails. It returns nil if any error occurs.
+func (a *AdapterFile) getJson(fileNameOrPath ...string) (configJson *gjson.Json, err error) {
+	usedFileNameOrPath := a.GetFileName()
+	if len(fileNameOrPath) > 0 && fileNameOrPath[0] != "" {
+		usedFileNameOrPath = fileNameOrPath[0]
+	}
+	// It uses JSON map to cache specified configuration file content.
+	// It checks the existing json object with the reading lock, as it is created on first usage.
+	var result *gjson.Json
+	if cached, found := a.jsonMap.Search(usedFileNameOrPath); found {
+		result = cached
+	} else {
+		result = a.jsonMap.GetOrSetFuncLock(usedFileNameOrPath, func() *gjson.Json {
+			var (
+				content  string
+				filePath string
+			)
+			// The configured content can be any kind of data type different from its file type.
+			isFromConfigContent := true
+			if content = a.GetContent(usedFileNameOrPath); content == "" {
+				isFromConfigContent = false
+				filePath, err = a.GetFilePath(usedFileNameOrPath)
+				if err != nil {
+					return nil
+				}
+				if filePath == "" {
+					return nil
+				}
+				if file := gres.Get(filePath); file != nil {
+					content = string(file.Content())
+				} else {
+					content = gfile.GetContents(filePath)
+				}
+			}
+			// Note that the underlying configuration JSON object operations are concurrent safe.
+			dataType := gjson.ContentType(gfile.ExtName(filePath))
+			if gjson.IsValidDataType(dataType) && !isFromConfigContent {
+				configJson, err = gjson.LoadContentType(dataType, []byte(content), true)
+			} else {
+				configJson, err = gjson.LoadContent([]byte(content), true)
+			}
+			if err != nil {
+				if filePath != "" {
+					err = gerror.Wrapf(err, `load config file "%s" failed`, filePath)
+				} else {
+					err = gerror.Wrap(err, `load configuration failed`)
+				}
+				if filePath != "" && !gres.Contains(filePath) {
+					a.addFileWatcher(usedFileNameOrPath, filePath)
+				}
+				return nil
+			}
+			configJson.SetViolenceCheck(a.violenceCheck)
+			// Add monitor for this configuration file,
+			// any changes of this file will refresh its cache in the Config object.
+			if filePath != "" && !gres.Contains(filePath) {
+				a.addFileWatcher(usedFileNameOrPath, filePath)
+			}
+			return configJson
+		})
+	}
+	if result != nil {
+		return result, err
+	}
+	return
+}
+
+// addFileWatcher registers a callback that invalidates the cached file content on changes.
+func (a *AdapterFile) addFileWatcher(fileNameOrPath, filePath string) {
+	watcherKey := fileNameOrPath + "\x00" + filePath
+	registration := &fileWatcher{token: new(int)}
+	a.watcherMutex.Lock()
+	if currentRegistration, ok := a.watcherRegistrations[watcherKey]; ok {
+		watcher := currentRegistration.watcher
+		a.watcherMutex.Unlock()
+		a.rearmFileWatcher(watcher, filePath, nil)
+		return
+	}
+	a.watcherRegistrations[watcherKey] = registration
+	a.watcherMutex.Unlock()
+
+	callback, err := gfsnotify.Add(filePath, func(event *gfsnotify.Event) {
+		a.watcherMutex.Lock()
+		currentRegistration, ok := a.watcherRegistrations[watcherKey]
+		if !ok || currentRegistration != registration {
+			a.watcherMutex.Unlock()
+			return
+		}
+		currentRegistration.watcher = event.Watcher
+		watcher := currentRegistration.watcher
+		a.watcherMutex.Unlock()
+
+		a.rearmFileWatcher(watcher, filePath, func() {
+			a.notifyFileWatcher(fileNameOrPath, filePath, OperationCreate)
+		})
+		a.jsonMap.Remove(fileNameOrPath)
+		if event.IsWrite() || event.IsRemove() || event.IsCreate() || event.IsRename() || event.IsChmod() {
+			fileType := gfile.ExtName(fileNameOrPath)
+			adapterCtx := NewAdapterFileCtx().WithFileName(fileNameOrPath).WithFilePath(filePath).WithFileType(fileType)
+			switch {
+			case event.IsWrite():
+				adapterCtx.WithOperation(OperationWrite)
+			case event.IsRemove():
+				adapterCtx.WithOperation(OperationRemove)
+			case event.IsCreate():
+				adapterCtx.WithOperation(OperationCreate)
+			case event.IsRename():
+				adapterCtx.WithOperation(OperationRename)
+			case event.IsChmod():
+				adapterCtx.WithOperation(OperationChmod)
+			}
+			a.notifyWatchers(adapterCtx.Ctx)
+		}
+	})
+	if callback != nil {
+		registration.callbackID = callback.Id
+	}
+	if err != nil {
+		a.watcherMutex.Lock()
+		if currentRegistration, ok := a.watcherRegistrations[watcherKey]; ok && currentRegistration == registration {
+			delete(a.watcherRegistrations, watcherKey)
+		}
+		a.watcherMutex.Unlock()
+		if callback != nil {
+			if removeErr := gfsnotify.RemoveCallback(callback.Id); removeErr != nil {
+				intlog.Errorf(context.TODO(), "failed remove config file watcher[%s]: %v", filePath, removeErr)
+			}
+		}
+		intlog.Errorf(context.TODO(), "failed listen config file event[%s]: %v", filePath, err)
+	}
+}
+
+// rearmFileWatcher restores the underlying watch after an event removed it.
+func (a *AdapterFile) rearmFileWatcher(watcher *gfsnotify.Watcher, filePath string, onRearmed func()) {
+	if watcher == nil {
+		return
+	}
+	if gfile.Exists(filePath) {
+		if err := watcher.ReAdd(filePath); err != nil {
+			intlog.Errorf(context.TODO(), "failed rearm config file watcher[%s]: %v", filePath, err)
+		}
+		return
+	}
+	go func() {
+		for range fileWatcherRearmRetryCount {
+			time.Sleep(fileWatcherRearmRetryInterval)
+			if !gfile.Exists(filePath) {
+				continue
+			}
+			if err := watcher.ReAdd(filePath); err != nil {
+				intlog.Errorf(context.TODO(), "failed rearm config file watcher[%s]: %v", filePath, err)
+				continue
+			}
+			if onRearmed != nil {
+				onRearmed()
+			}
+			return
+		}
+	}()
+}
+
+// notifyFileWatcher invalidates cached content and notifies logical watchers of a file event.
+func (a *AdapterFile) notifyFileWatcher(fileNameOrPath, filePath string, operation OperationType) {
+	a.jsonMap.Remove(fileNameOrPath)
+	adapterCtx := NewAdapterFileCtx().WithFileName(fileNameOrPath).WithFilePath(filePath).WithFileType(gfile.ExtName(fileNameOrPath))
+	adapterCtx.WithOperation(operation)
+	a.notifyWatchers(adapterCtx.Ctx)
+}
+
+// AddWatcher adds a watcher for the specified configuration file.
+func (a *AdapterFile) AddWatcher(name string, fn WatcherFunc) {
+	a.watchers.Add(name, fn)
+}
+
+// RemoveWatcher removes the watcher for the specified configuration file.
+func (a *AdapterFile) RemoveWatcher(name string) {
+	a.watchers.Remove(name)
+}
+
+// GetWatcherNames returns all watcher names.
+func (a *AdapterFile) GetWatcherNames() []string {
+	return a.watchers.GetNames()
+}
+
+// IsWatching checks and returns whether the specified `name` is watching.
+func (a *AdapterFile) IsWatching(name string) bool {
+	return a.watchers.IsWatching(name)
+}
+
+// notifyWatchers notifies all watchers.
+func (a *AdapterFile) notifyWatchers(ctx context.Context) {
+	a.watchers.Notify(ctx)
+}

@@ -6,31 +6,36 @@
 
 package gredis
 
-import "github.com/gogf/gf/container/gmap"
+import (
+	"context"
+
+	"github.com/gogf/gf/v2/container/gmap"
+	"github.com/gogf/gf/v2/internal/intlog"
+)
 
 var (
-	// Instance map
-	instances = gmap.NewStrAnyMap(true)
+	// checker is the checker function for instances map.
+	checker        = func(v *Redis) bool { return v == nil }
+	localInstances = gmap.NewKVMapWithChecker[string, *Redis](checker, true)
 )
 
 // Instance returns an instance of redis client with specified group.
-// The <name> param is unnecessary, if <name> is not passed,
+// The `name` param is unnecessary, if `name` is not passed,
 // it returns a redis instance with default configuration group.
 func Instance(name ...string) *Redis {
 	group := DefaultGroupName
 	if len(name) > 0 && name[0] != "" {
 		group = name[0]
 	}
-	v := instances.GetOrSetFuncLock(group, func() interface{} {
+	return localInstances.GetOrSetFuncLock(group, func() *Redis {
 		if config, ok := GetConfig(group); ok {
-			r := New(config)
-			r.group = group
+			r, err := New(config)
+			if err != nil {
+				intlog.Errorf(context.TODO(), `%+v`, err)
+				return nil
+			}
 			return r
 		}
 		return nil
 	})
-	if v != nil {
-		return v.(*Redis)
-	}
-	return nil
 }

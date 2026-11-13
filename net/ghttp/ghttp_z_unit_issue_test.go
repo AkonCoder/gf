@@ -1,0 +1,1137 @@
+// Copyright GoFrame Author(https://goframe.org). All Rights Reserved.
+//
+// This Source Code Form is subject to the terms of the MIT License.
+// If a copy of the MIT was not distributed with this file,
+// You can obtain one at https://github.com/gogf/gf.
+
+package ghttp_test
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gogf/gf/v2/encoding/gjson"
+	"github.com/gogf/gf/v2/encoding/gurl"
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/net/ghttp"
+	"github.com/gogf/gf/v2/test/gtest"
+	"github.com/gogf/gf/v2/text/gstr"
+	"github.com/gogf/gf/v2/util/gtag"
+	"github.com/gogf/gf/v2/util/guid"
+)
+
+// https://github.com/gogf/gf/issues/1609
+func Test_Issue1609(t *testing.T) {
+	s := g.Server(guid.S())
+	group := s.Group("/api/get")
+	group.GET("/", func(r *ghttp.Request) {
+		r.Response.Write("get")
+	})
+	s.SetDumpRouterMap(false)
+	gtest.Assert(s.Start(), nil)
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+	gtest.C(t, func(t *gtest.T) {
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+
+		t.Assert(c.GetContent(ctx, "/api/get"), "get")
+		t.Assert(c.PostContent(ctx, "/test"), "Not Found")
+	})
+}
+
+func Test_Issue1611(t *testing.T) {
+	s := g.Server(guid.S())
+	v := g.View(guid.S())
+	content := "This is header"
+	gtest.AssertNil(v.SetPath(gtest.DataPath("issue1611")))
+	s.SetView(v)
+	s.BindHandler("/", func(r *ghttp.Request) {
+		gtest.AssertNil(r.Response.WriteTpl("index/layout.html", g.Map{
+			"header": content,
+		}))
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+	gtest.C(t, func(t *gtest.T) {
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+
+		t.Assert(gstr.Contains(c.GetContent(ctx, "/"), content), true)
+	})
+}
+
+// https://github.com/gogf/gf/issues/1626
+func Test_Issue1626(t *testing.T) {
+	type TestReq struct {
+		Name string `v:"required"`
+	}
+	type TestRes struct {
+		Name string
+	}
+	s := g.Server(guid.S())
+	s.Use(
+		ghttp.MiddlewareHandlerResponse,
+		func(r *ghttp.Request) {
+			r.Middleware.Next()
+			if err := r.GetError(); err != nil {
+				r.Response.ClearBuffer()
+				r.Response.Write(err.Error())
+			}
+		},
+	)
+	s.BindHandler("/test", func(ctx context.Context, req *TestReq) (res *TestRes, err error) {
+		return &TestRes{Name: req.Name}, nil
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+	gtest.C(t, func(t *gtest.T) {
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+
+		t.Assert(c.GetContent(ctx, "/test"), `The Name field is required`)
+		t.Assert(
+			gstr.Contains(c.GetContent(ctx, "/test?name=john"), `{"Name":"john"}`),
+			true,
+		)
+	})
+}
+
+type Issue1653TestReq struct {
+	g.Meta    `path:"/test" method:"post" summary:"执行报表查询" tags:""`
+	UUID      string  `json:"uuid" v:"required#菜单唯一码不可为空" dc:""`
+	Limit     int     `json:"limit"`
+	Filter    []g.Map `json:"filter"`
+	FilterMap g.Map   `json:"filter_map"`
+}
+
+type Issue1653TestRes struct {
+	UUID     string `json:"uuid"`
+	FeedBack any    `json:"feed_back"`
+}
+
+type cIssue1653Foo struct{}
+
+var Issue1653Foo = new(cIssue1653Foo)
+
+func (r cIssue1653Foo) PostTest(ctx context.Context, req *Issue1653TestReq) (*Issue1653TestRes, error) {
+	return &Issue1653TestRes{UUID: req.UUID, FeedBack: req.Filter[0]["code"]}, nil
+}
+
+func Test_Issue1653(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Use(ghttp.MiddlewareHandlerResponse)
+	s.Group("/boot", func(grp *ghttp.RouterGroup) {
+		grp.Bind(Issue1653Foo)
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+	time.Sleep(1000 * time.Millisecond)
+	// g.Client()测试：
+	gtest.C(t, func(t *gtest.T) {
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		dataReq := `
+{"uuid":"28ee701c-7daf-4cdc-9a62-6d6704e6112b","limit":0,"filter":
+[
+{
+"code":"P00001","constraint":"",
+"created_at":"2022-03-08 04:56:15","created_by":"3ed72aba-1622-4262-a61e-83581e020763","default_value":"MonthStart()",
+"expression":"AND A.DLVDAT_0>='%v'","force":false,"frequent":true,"name":"发货日期起",
+"parent":"13109602-0da3-49b9-827f-2f44183ab756","read_only":false,"reference":null,"type":"date",
+"updated_at":"2022-03-08 04:56:15","updated_by":"3ed72aba-1622-4262-a61e-83581e020763","updated_tick":1,
+"uuid":"e6cd3268-1d75-42e0-83f9-f1f7b29976e8"
+},
+{
+"code":"P00002","constraint":"","created_at":"2022-03-08 04:56:15","created_by":
+"3ed72aba-1622-4262-a61e-83581e020763","default_value":"MonthEnd()","expression":"AND A.DLVDAT_0<='%v'","force":false,"frequent":true,
+"name":"发货日期止","parent":"13109602-0da3-49b9-827f-2f44183ab756","read_only":false,"reference":null,"type":"date","updated_at":
+"2022-03-08 04:56:15","updated_by":"3ed72aba-1622-4262-a61e-83581e020763","updated_tick":1,"uuid":"dba005b5-655e-4ac4-8b22-898aa3ad2294"
+}
+],
+"filter_map":{"P00001":1646064000000,"P00002":1648742399999},
+"selector_template":""
+}
+`
+		resContent := c.PostContent(ctx, "/boot/test", dataReq)
+		t.Assert(resContent, `{"code":0,"message":"OK","data":{"uuid":"28ee701c-7daf-4cdc-9a62-6d6704e6112b","feed_back":"P00001"}}`)
+	})
+}
+
+type LbseMasterHead struct {
+	Code     string   `json:"code" v:"code@required|min-length:1#The code is required"`
+	Active   bool     `json:"active"`
+	Preset   bool     `json:"preset"`
+	Superior string   `json:"superior"`
+	Path     []string `json:"path"`
+	Sort     int      `json:"sort"`
+	Folder   bool     `json:"folder"`
+	Test     string   `json:"test" v:"required"`
+}
+
+type Template struct {
+	LbseMasterHead
+	Datasource string `json:"datasource" v:"required|length:32,32#The datasource is required"`
+	SQLText    string `json:"sql_text"`
+}
+
+type TemplateCreateReq struct {
+	g.Meta `path:"/test" method:"post" summary:"Create template" tags:"Template"`
+	Master Template `json:"master"`
+}
+
+type TemplateCreateRes struct{}
+
+type cFoo1 struct{}
+
+var Foo1 = new(cFoo1)
+
+func (r cFoo1) PostTest1(ctx context.Context, req *TemplateCreateReq) (res *TemplateCreateRes, err error) {
+	g.Dump(req)
+	return
+}
+
+// https://github.com/gogf/gf/issues/1662
+func Test_Issue662(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Use(ghttp.MiddlewareHandlerResponse)
+	s.Group("/boot", func(grp *ghttp.RouterGroup) {
+		grp.Bind(Foo1)
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+	time.Sleep(1000 * time.Millisecond)
+
+	// g.Client()测试：
+	// code字段传入空字符串时，校验没有提示
+	gtest.C(t, func(t *gtest.T) {
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		dataReq := `
+{"master":{"active":true,"code":"","created_at":"","created_by":"","created_by_text":"","datasource":"38b6f170-a584-43fc-8912-cc1e9bf1b1a9","description":"币种","folder":false,"path":"[\"XCUR\"]","preset":false,"sort":1000,"sql_text":"SELECT!!!!","superior":null,"updated_at":"","updated_by":"","updated_by_text":"","updated_tick":0,"uuid":""},"translation":[{"code":"zh_CN","text":"币种"},{"code":"en_US","text":"币种"}],"filters":null,"fields":[{"code":"F001","created_at":"2022-01-18 23:37:38","created_by":"3ed72aba-1622-4262-a61e-83581e020763","field":"value","hide":false,"min_width":120,"name":"value","parent":"296154bf-b718-4e8f-8b70-efb969b831ec","updated_at":"2022-01-18 23:37:38","updated_by":"3ed72aba-1622-4262-a61e-83581e020763","updated_tick":1,"uuid":"f2140b7a-044c-41c3-b70e-852e6160b21b"},{"code":"F002","created_at":"2022-01-18 23:37:38","created_by":"3ed72aba-1622-4262-a61e-83581e020763","field":"label","hide":false,"min_width":120,"name":"label","parent":"296154bf-b718-4e8f-8b70-efb969b831ec","updated_at":"2022-01-18 23:37:38","updated_by":"3ed72aba-1622-4262-a61e-83581e020763","updated_tick":1,"uuid":"2d3bba5d-308b-4dba-bcac-f093e6556eca"}],"limit":0}
+`
+		t.Assert(c.PostContent(ctx, "/boot/test", dataReq), `{"code":51,"message":"The code is required","data":null}`)
+	})
+}
+
+type DemoReq struct {
+	g.Meta `path:"/demo" method:"post"`
+	Data   *gjson.Json
+}
+
+type DemoRes struct {
+	Content string
+}
+
+type Api struct{}
+
+func (a *Api) Demo(ctx context.Context, req *DemoReq) (res *DemoRes, err error) {
+	return &DemoRes{
+		Content: req.Data.MustToJsonString(),
+	}, err
+}
+
+var api = Api{}
+
+// https://github.com/gogf/gf/issues/2172
+func Test_Issue2172(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Use(ghttp.MiddlewareHandlerResponse)
+	s.Group("/", func(group *ghttp.RouterGroup) {
+		group.Bind(api)
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+	time.Sleep(1000 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		dataReq := `{"data":{"asd":1}}`
+		t.Assert(c.PostContent(ctx, "/demo", dataReq), `{"code":0,"message":"OK","data":{"Content":"{\"asd\":1}"}}`)
+	})
+}
+
+// https://github.com/gogf/gf/issues/2334
+func Test_Issue2334(t *testing.T) {
+	s := g.Server(guid.S())
+	s.SetServerRoot(gtest.DataPath("static1"))
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+	time.Sleep(1000 * time.Millisecond)
+	gtest.C(t, func(t *gtest.T) {
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		t.Assert(c.GetContent(ctx, "/index.html"), "index")
+
+		c.SetHeader("If-Modified-Since", "Mon, 12 Dec 2040 05:53:35 GMT")
+		res, _ := c.Get(ctx, "/index.html")
+		t.Assert(res.StatusCode, 304)
+	})
+}
+
+type CreateOrderReq struct {
+	g.Meta  `path:"/order" tags:"订单" method:"put" summary:"创建订单"`
+	Details []*OrderDetail `p:"detail" v:"required#请输入订单详情" dc:"订单详情"`
+}
+
+type OrderDetail struct {
+	Name   string  `p:"name" v:"required#请输入物料名称" dc:"物料名称"`
+	Sn     string  `p:"sn" v:"required#请输入客户编号" dc:"客户编号"`
+	Images string  `p:"images" dc:"图片"`
+	Desc   string  `p:"desc" dc:"备注"`
+	Number int     `p:"number" v:"required#请输入数量" dc:"数量"`
+	Price  float64 `p:"price" v:"required" dc:"单价"`
+}
+
+type CreateOrderRes struct{}
+type OrderController struct{}
+
+func (c *OrderController) CreateOrder(ctx context.Context, req *CreateOrderReq) (res *CreateOrderRes, err error) {
+	return
+}
+
+// https://github.com/gogf/gf/issues/2482
+func Test_Issue2482(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Group("/api/v2", func(group *ghttp.RouterGroup) {
+		group.Middleware(ghttp.MiddlewareHandlerResponse)
+		group.Bind(OrderController{})
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+	time.Sleep(1000 * time.Millisecond)
+
+	c := g.Client()
+	c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+	gtest.C(t, func(t *gtest.T) {
+		content := `
+{
+    "detail": [
+      {
+        "images": "string",
+        "desc": "string",
+        "number": 0,
+        "price": 0
+      }
+    ]
+  }
+`
+		t.Assert(c.PutContent(ctx, "/api/v2/order", content), `{"code":51,"message":"请输入物料名称","data":null}`)
+	})
+	gtest.C(t, func(t *gtest.T) {
+		content := `
+{
+    "detail": [
+      {
+        "images": "string",
+        "desc": "string",
+        "number": 0,
+		"name": "string",
+        "price": 0
+      }
+    ]
+  }
+`
+		t.Assert(c.PutContent(ctx, "/api/v2/order", content), `{"code":51,"message":"请输入客户编号","data":null}`)
+	})
+	gtest.C(t, func(t *gtest.T) {
+		content := `
+{
+    "detail": [
+      {
+        "images": "string",
+        "desc": "string",
+        "number": 0,
+		"name": "string",
+		"sn": "string",
+        "price": 0
+      }
+    ]
+  }
+`
+		t.Assert(c.PutContent(ctx, "/api/v2/order", content), `{"code":0,"message":"OK","data":null}`)
+	})
+}
+
+type Issue2890Enum string
+
+const (
+	Issue2890EnumA Issue2890Enum = "a"
+	Issue2890EnumB Issue2890Enum = "b"
+)
+
+type Issue2890Req struct {
+	g.Meta `path:"/issue2890" method:"post"`
+	Id     int
+	Enums  Issue2890Enum `v:"required|enums"`
+}
+
+type Issue2890Res struct{}
+type Issue2890Controller struct{}
+
+func (c *Issue2890Controller) Post(ctx context.Context, req *Issue2890Req) (res *Issue2890Res, err error) {
+	g.RequestFromCtx(ctx).Response.Write(req.Enums)
+	return
+}
+
+// https://github.com/gogf/gf/issues/2890
+func Test_Issue2890(t *testing.T) {
+	gtest.C(t, func(t *gtest.T) {
+		oldEnumsJson, err := gtag.GetGlobalEnums()
+		t.AssertNil(err)
+		defer t.AssertNil(gtag.SetGlobalEnums(oldEnumsJson))
+
+		err = gtag.SetGlobalEnums(`{"github.com/gogf/gf/v2/net/ghttp_test.Issue2890Enum": ["a","b"]}`)
+		t.AssertNil(err)
+
+		s := g.Server(guid.S())
+		s.Group("/api/v2", func(group *ghttp.RouterGroup) {
+			group.Middleware(ghttp.MiddlewareHandlerResponse)
+			group.Bind(Issue2890Controller{})
+		})
+		s.SetDumpRouterMap(false)
+		s.Start()
+		defer s.Shutdown()
+		time.Sleep(1000 * time.Millisecond)
+
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		t.Assert(
+			c.PostContent(ctx, "/api/v2/issue2890", ``),
+			`{"code":51,"message":"The Enums field is required","data":null}`,
+		)
+		t.Assert(
+			c.PostContent(ctx, "/api/v2/issue2890", `{"Enums":"c"}`),
+			"{\"code\":51,\"message\":\"The Enums value `c` should be in enums of: [\\\"a\\\",\\\"b\\\"]\",\"data\":null}",
+		)
+	})
+}
+
+// https://github.com/gogf/gf/issues/2963
+func Test_Issue2963(t *testing.T) {
+	gtest.C(t, func(t *gtest.T) {
+		s := g.Server(guid.S())
+		s.SetServerRoot(gtest.DataPath("issue2963"))
+		s.SetDumpRouterMap(false)
+		s.Start()
+		defer s.Shutdown()
+		time.Sleep(100 * time.Millisecond)
+
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		t.Assert(c.GetContent(ctx, "/1.txt"), `1`)
+		t.Assert(c.GetContent(ctx, "/中文G146(1)-icon.txt"), `中文G146(1)-icon`)
+		t.Assert(c.GetContent(ctx, "/"+gurl.Encode("中文G146(1)-icon.txt")), `中文G146(1)-icon`)
+	})
+}
+
+type Issue3077Req struct {
+	g.Meta `path:"/echo" method:"get"`
+	A      string `default:"a"`
+	B      string `default:""`
+}
+type Issue3077Res struct {
+	g.Meta `mime:"text/html"`
+}
+
+type Issue3077V1 struct{}
+
+func (c *Issue3077V1) Hello(ctx context.Context, req *Issue3077Req) (res *Issue3077Res, err error) {
+	g.RequestFromCtx(ctx).Response.Write(fmt.Sprintf("%v", req))
+	return
+}
+
+// https://github.com/gogf/gf/issues/3077
+func Test_Issue3077(t *testing.T) {
+	gtest.C(t, func(t *gtest.T) {
+		s := g.Server(guid.S())
+		s.Group("/", func(group *ghttp.RouterGroup) {
+			group.Bind(Issue3077V1{})
+		})
+		s.SetDumpRouterMap(false)
+		s.Start()
+		defer s.Shutdown()
+		time.Sleep(100 * time.Millisecond)
+
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		t.Assert(c.GetContent(ctx, "/echo?a=1&b=2"), `&{{} 1 2}`)
+		t.Assert(c.GetContent(ctx, "/echo?"), `&{{} a }`)
+	})
+}
+
+type ListMessageReq struct {
+	g.Meta    `path:"/list" method:"get"`
+	StartTime int64
+	EndTime   int64
+}
+type ListMessageRes struct {
+	g.Meta
+	Title   string
+	Content string
+}
+type BaseRes[T any] struct {
+	g.Meta
+	Code int
+	Data T
+	Msg  string
+}
+type cMessage struct{}
+
+func (c *cMessage) List(ctx context.Context, req *ListMessageReq) (res *BaseRes[*ListMessageRes], err error) {
+	res = &BaseRes[*ListMessageRes]{
+		Code: 100,
+		Data: &ListMessageRes{
+			Title:   "title",
+			Content: "hello",
+		},
+	}
+	return res, err
+}
+
+// https://github.com/gogf/gf/issues/2457
+func Test_Issue2457(t *testing.T) {
+	gtest.C(t, func(t *gtest.T) {
+		s := g.Server(guid.S())
+		s.Use(ghttp.MiddlewareHandlerResponse)
+		s.Group("/", func(group *ghttp.RouterGroup) {
+			group.Bind(
+				new(cMessage),
+			)
+		})
+		s.SetDumpRouterMap(false)
+		s.Start()
+		defer s.Shutdown()
+		time.Sleep(100 * time.Millisecond)
+
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		t.Assert(c.GetContent(ctx, "/list"), `{"code":0,"message":"OK","data":{"Code":100,"Data":{"Title":"title","Content":"hello"},"Msg":""}}`)
+	})
+}
+
+// https://github.com/gogf/gf/issues/3245
+type Issue3245Req struct {
+	g.Meta      `path:"/hello" method:"get"`
+	Name        string `p:"nickname" json:"name"`
+	XHeaderName string `p:"Header-Name" in:"header" json:"X-Header-Name"`
+	XHeaderAge  uint8  `p:"Header-Age" in:"cookie" json:"X-Header-Age"`
+}
+type Issue3245Res struct {
+	Reply any
+}
+
+type Issue3245V1 struct{}
+
+func (Issue3245V1) Hello(ctx context.Context, req *Issue3245Req) (res *Issue3245Res, err error) {
+	res = &Issue3245Res{
+		Reply: req,
+	}
+	return
+}
+
+func Test_Issue3245(t *testing.T) {
+	gtest.C(t, func(t *gtest.T) {
+		s := g.Server(guid.S())
+		s.Use(ghttp.MiddlewareHandlerResponse)
+		s.Group("/", func(group *ghttp.RouterGroup) {
+			group.Bind(
+				new(Issue3245V1),
+			)
+		})
+		s.SetDumpRouterMap(false)
+		s.Start()
+		defer s.Shutdown()
+		time.Sleep(100 * time.Millisecond)
+
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		c.SetHeader("Header-Name", "oldme")
+		c.SetCookie("Header-Age", "25")
+
+		expect := `{"code":0,"message":"OK","data":{"Reply":{"name":"oldme","X-Header-Name":"oldme","X-Header-Age":25}}}`
+		t.Assert(c.GetContent(ctx, "/hello?nickname=oldme"), expect)
+	})
+}
+
+type ItemSecondThird struct {
+	SecondID uint64 `json:"secondId,string"`
+	ThirdID  uint64 `json:"thirdId,string"`
+}
+type ItemFirst struct {
+	ID uint64 `json:"id,string"`
+	ItemSecondThird
+}
+type ItemInput struct {
+	ItemFirst
+}
+type Issue3789Req struct {
+	g.Meta `path:"/hello" method:"GET"`
+	ItemInput
+}
+type Issue3789Res struct {
+	ItemInput
+}
+
+type Issue3789 struct{}
+
+func (Issue3789) Say(ctx context.Context, req *Issue3789Req) (res *Issue3789Res, err error) {
+	res = &Issue3789Res{
+		ItemInput: req.ItemInput,
+	}
+	return
+}
+
+// https://github.com/gogf/gf/issues/3789
+func Test_Issue3789(t *testing.T) {
+	gtest.C(t, func(t *gtest.T) {
+		s := g.Server()
+		s.Use(ghttp.MiddlewareHandlerResponse)
+		s.Group("/", func(group *ghttp.RouterGroup) {
+			group.Bind(
+				new(Issue3789),
+			)
+		})
+		s.SetDumpRouterMap(false)
+		s.Start()
+		defer s.Shutdown()
+		time.Sleep(100 * time.Millisecond)
+
+		c := g.Client()
+		c.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+		expect := `{"code":0,"message":"OK","data":{"id":"0","secondId":"2","thirdId":"3"}}`
+		t.Assert(c.GetContent(ctx, "/hello?id=&secondId=2&thirdId=3"), expect)
+	})
+}
+
+// https://github.com/gogf/gf/issues/4108
+func Test_Issue4108(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Group("/", func(group *ghttp.RouterGroup) {
+		group.Middleware(ghttp.MiddlewareHandlerResponse)
+		group.GET("/", func(r *ghttp.Request) {
+			r.Response.Writer.Write([]byte("hello"))
+		})
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+	time.Sleep(100 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		client := g.Client()
+		client.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+
+		rsp, err := client.Get(ctx, "/")
+		t.AssertNil(err)
+		t.Assert(rsp.StatusCode, http.StatusOK)
+		t.Assert(rsp.ReadAllString(), "hello")
+	})
+}
+
+// https://github.com/gogf/gf/issues/4115
+func Test_Issue4115(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Use(func(r *ghttp.Request) {
+		r.Response.Writer.Write([]byte("hello"))
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+	time.Sleep(100 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		client := g.Client()
+		client.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+
+		rsp, err := client.Get(ctx, "/")
+		t.AssertNil(err)
+		t.Assert(rsp.StatusCode, http.StatusOK)
+		t.Assert(rsp.ReadAllString(), "hello")
+	})
+}
+
+// https://github.com/gogf/gf/issues/4047
+func Test_Issue4047(t *testing.T) {
+	gtest.C(t, func(t *gtest.T) {
+		s := g.Server(guid.S())
+		err := s.SetConfigWithMap(g.Map{
+			"logger": nil,
+		})
+		t.AssertNil(err)
+		t.Assert(s.Logger(), nil)
+	})
+}
+
+// Issue4093Req
+type Issue4093Req struct {
+	g.Meta     `path:"/test" method:"post"`
+	Page       int    `json:"page" example:"10" d:"1" v:"min:1#页码最小值不能低于1"  dc:"当前页码"`
+	PerPage    int    `json:"pageSize" example:"1" d:"10" v:"min:1|max:200#每页数量最小值不能低于1|最大值不能大于200" dc:"每页数量"`
+	Pagination bool   `json:"pagination" d:"true" dc:"是否需要进行分页"`
+	Name       string `json:"name" d:"john"`
+	Number     int    `json:"number" d:"1"`
+}
+
+type Issue4093Res struct {
+	g.Meta `mime:"text/html" example:"string"`
+}
+
+var (
+	Issue4093 = cIssue4093{}
+)
+
+type cIssue4093 struct{}
+
+func (c *cIssue4093) User(ctx context.Context, req *Issue4093Req) (res *Issue4093Res, err error) {
+	g.RequestFromCtx(ctx).Response.WriteJson(req)
+	return
+}
+
+// https://github.com/gogf/gf/issues/4093
+func Test_Issue4093(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Group("/", func(group *ghttp.RouterGroup) {
+		group.Middleware(ghttp.MiddlewareHandlerResponse)
+		group.Bind(Issue4093)
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		prefix := fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort())
+		client := g.Client().ContentJson()
+		client.SetPrefix(prefix)
+
+		t.Assert(client.PostContent(ctx, "/test", `{"pagination":false,"name":"","number":0}`), `{"page":1,"pageSize":10,"pagination":false,"name":"","number":0}`)
+		t.Assert(client.PostContent(ctx, "/test"), `{"page":1,"pageSize":10,"pagination":true,"name":"john","number":1}`)
+	})
+}
+
+// https://github.com/gogf/gf/issues/4128
+func Test_Issue4128(t *testing.T) {
+	var (
+		wg      sync.WaitGroup
+		servers = []*ghttp.Server{g.Server(guid.S()), g.Server(guid.S())}
+		errs    = make([]error, len(servers))
+	)
+	for i, s := range servers {
+		wg.Add(1)
+		go func(i int, s *ghttp.Server) {
+			defer wg.Done()
+			s.Group("/", func(group *ghttp.RouterGroup) {
+				group.GET("/index", func(r *ghttp.Request) {
+					r.Response.Write(i)
+				})
+			})
+			s.SetDumpRouterMap(false)
+			errs[i] = s.Start()
+		}(i, s)
+	}
+	wg.Wait()
+	defer func() {
+		for _, s := range servers {
+			if err := s.Shutdown(); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		for i, s := range servers {
+			t.AssertNil(errs[i])
+			client := g.Client()
+			client.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+			t.Assert(client.GetContent(ctx, "/index"), i)
+		}
+	})
+}
+
+// Issue4227Req
+type Issue4227Req struct {
+	g.Meta      `path:"/hello/:path_param" method:"post"`
+	HeaderParam string `json:"Authorization" in:"header" default:"Bearer token123"`
+	QueryParam  bool   `json:"query_param" in:"query" default:"false"`
+	PathParam   int    `json:"path_param" in:"path" default:"123" v:"required"`
+	CookieParam bool   `json:"cookie_param" in:"cookie" default:"false"`
+	BodyParam   bool   `json:"body_param" default:"false"`
+}
+
+type Issue4227Res struct {
+	g.Meta `mime:"application/json"`
+}
+
+var (
+	Issue4227 = cIssue4227{}
+)
+
+type cIssue4227 struct{}
+
+func (c *cIssue4227) Feature(ctx context.Context, req *Issue4227Req) (res *Issue4227Res, err error) {
+	g.RequestFromCtx(ctx).Response.WriteJson(req)
+	return
+}
+
+// https://github.com/gogf/gf/issues/4227
+func Test_Issue4227(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Group("/", func(group *ghttp.RouterGroup) {
+		group.Middleware(ghttp.MiddlewareHandlerResponse)
+		group.Bind(Issue4227)
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		prefix := fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort())
+		client := g.Client().ContentJson()
+		client.SetPrefix(prefix)
+
+		resp1 := client.PostContent(ctx, "/hello/123", `{}`)
+		t.Assert(resp1, `{"Authorization":"Bearer token123","query_param":false,"path_param":123,"cookie_param":false,"body_param":false}`)
+
+		client.SetHeader("Authorization", "Bearer token123")
+
+		resp2 := client.PostContent(ctx, "/hello/123", `{"body_param":"true"}`)
+		t.Assert(resp2, `{"Authorization":"Bearer token123","query_param":false,"path_param":123,"cookie_param":false,"body_param":true}`)
+
+		client.SetCookie("cookie_param", "true")
+		resp3 := client.PostContent(ctx, "/hello/123", `{}`)
+		t.Assert(resp3, `{"Authorization":"Bearer token123","query_param":false,"path_param":123,"cookie_param":true,"body_param":false}`)
+
+	})
+}
+
+// https://github.com/gogf/gf/issues/4765
+// Test_Issue4765 verifies that a request carrying a non-canonical method casing does not
+// pollute the router searching cache.
+//
+// Such a request does not match a route registered with the canonical method, as the method
+// token is case-sensitive(RFC 9110 section 9.1). But its serveItem-less searching result must
+// not be shared with the canonical method, or else every subsequent well-formed request would
+// be served from that cache item and 404 as well.
+//
+// The method to search with has two sources, and both are covered here: the request line, and
+// the Access-Control-Request-Method header of a preflight request.
+func Test_Issue4765(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Group("/", func(group *ghttp.RouterGroup) {
+		group.GET("/user-case", func(r *ghttp.Request) {
+			r.Response.Write("ok")
+		})
+		group.GET("/preflight-case", func(r *ghttp.Request) {
+			r.Response.Write("ok")
+		})
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+
+	var (
+		prefix     = fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort())
+		httpClient = &http.Client{}
+	)
+	// doRequest sends a request using the raw net/http client, as gclient normalizes the
+	// method to uppercase internally and cannot produce a non-canonical method casing.
+	doRequest := func(t *gtest.T, method, path string, header map[string]string) (int, string) {
+		req, err := http.NewRequest(method, prefix+path, nil)
+		t.AssertNil(err)
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		resp, err := httpClient.Do(req)
+		t.AssertNil(err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		t.AssertNil(err)
+		return resp.StatusCode, string(body)
+	}
+
+	// The method to search with comes from the request line.
+	gtest.C(t, func(t *gtest.T) {
+		cases := []struct {
+			method string
+			status int
+			body   string
+		}{
+			// Non-canonical casing does not match the route registered as "GET".
+			{"get", http.StatusNotFound, "Not Found"},
+			{"Get", http.StatusNotFound, "Not Found"},
+			// The canonical method still works, which proves the searching result of the
+			// requests above was not cached under the canonical key.
+			{"GET", http.StatusOK, "ok"},
+			{"GET", http.StatusOK, "ok"},
+		}
+		for _, c := range cases {
+			status, body := doRequest(t, c.method, "/user-case", nil)
+			t.Assert(status, c.status)
+			t.Assert(body, c.body)
+		}
+	})
+
+	// The method to search with comes from the Access-Control-Request-Method header, which
+	// is client-supplied as well and is not normalized either.
+	gtest.C(t, func(t *gtest.T) {
+		status, body := doRequest(t, http.MethodOptions, "/preflight-case", map[string]string{
+			"Origin":                        "http://example.com",
+			"Access-Control-Request-Method": "get",
+		})
+		t.Assert(status, http.StatusNotFound)
+		t.Assert(body, "Not Found")
+
+		for i := 0; i < 2; i++ {
+			status, body = doRequest(t, http.MethodGet, "/preflight-case", nil)
+			t.Assert(status, http.StatusOK)
+			t.Assert(body, "ok")
+		}
+	})
+}
+
+// https://github.com/gogf/gf/issues/4830
+// Test_Issue4830 verifies that the router layer and the parameter layer agree on the method
+// of a request.
+//
+// The router searches with the method token as it was received, and `r.Method` keeps that very
+// value, so the framework internal branches on `r.Method`(eg the GET body fallback of GetQuery)
+// and the user code(eg method based middleware) can never diverge from the routing result of
+// the same request.
+func Test_Issue4830(t *testing.T) {
+	s := g.Server(guid.S())
+	s.Group("/", func(group *ghttp.RouterGroup) {
+		group.Middleware(func(r *ghttp.Request) {
+			if r.Method == http.MethodDelete {
+				r.Response.WriteStatusExit(http.StatusForbidden, "blocked")
+			}
+			r.Middleware.Next()
+		})
+		group.GET("/query", func(r *ghttp.Request) {
+			r.Response.Write(r.Method, ",", r.GetQuery("a"))
+		})
+		group.DELETE("/delete", func(r *ghttp.Request) {
+			r.Response.Write("reached")
+		})
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		var (
+			prefix     = fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort())
+			httpClient = &http.Client{}
+			cases      = []struct {
+				method string
+				path   string
+				status int
+				body   string
+			}{
+				// The handler observes the method the request was routed with, so GetQuery
+				// takes its GET branch and falls back to the request body.
+				{"GET", "/query", http.StatusOK, "GET,frombody"},
+				// Non-canonical casing never reaches the handler, so there is no request that
+				// the router treats as GET while the parameter layer does not.
+				{"get", "/query", http.StatusNotFound, "Not Found"},
+				// The middleware observes the same method as the router did.
+				{"DELETE", "/delete", http.StatusForbidden, "blocked"},
+				{"delete", "/delete", http.StatusNotFound, "Not Found"},
+				{"DeLeTe", "/delete", http.StatusNotFound, "Not Found"},
+			}
+		)
+		for _, c := range cases {
+			req, err := http.NewRequest(c.method, prefix+c.path, bytes.NewBufferString(`{"a":"frombody"}`))
+			t.AssertNil(err)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := httpClient.Do(req)
+			t.AssertNil(err)
+			body, err := io.ReadAll(resp.Body)
+			t.AssertNil(err)
+			resp.Body.Close()
+			t.Assert(resp.StatusCode, c.status)
+			t.Assert(string(body), c.body)
+		}
+	})
+}
+
+// Issue4751Req is the request of Test_Issue4751.
+type Issue4751Req struct {
+	g.Meta    `path:"/names" method:"get,post"`
+	Names     []string `json:"names,omitempty"`
+	Ids       []int    `json:"ids"`
+	Name      string   `json:"name"`
+	FileNames []string `json:"file.names,omitempty"`
+}
+
+// Issue4751Res is the response of Test_Issue4751.
+type Issue4751Res struct{}
+
+// cIssue4751 is the controller of Test_Issue4751.
+type cIssue4751 struct{}
+
+// Names writes the parsed request as JSON.
+func (c *cIssue4751) Names(ctx context.Context, req *Issue4751Req) (res *Issue4751Res, err error) {
+	g.RequestFromCtx(ctx).Response.WriteJson(req)
+	return
+}
+
+// https://github.com/gogf/gf/issues/4751
+// Test_Issue4751 verifies that all the values of a repeated plain query parameter are bound to
+// the slice field of the request struct.
+func Test_Issue4751(t *testing.T) {
+	type plainReq struct {
+		Names []string
+		Name  string
+		Data  []byte
+	}
+	s := g.Server(guid.S())
+	s.Group("/", func(group *ghttp.RouterGroup) {
+		group.Bind(&cIssue4751{})
+	})
+	s.BindHandler("/plain", func(r *ghttp.Request) {
+		var req plainReq
+		if err := r.Parse(&req); err != nil {
+			r.Response.WriteExit(err)
+		}
+		r.Response.Write(req.Names, ",", req.Name, ",", r.Get("names"), ",", req.Data)
+	})
+	s.BindHandler("/query", func(r *ghttp.Request) {
+		var req *plainReq
+		if err := r.ParseQuery(&req); err != nil {
+			r.Response.WriteExit(err)
+		}
+		r.Response.Write(req.Names, req.Name)
+	})
+	s.BindHandler("/map", func(r *ghttp.Request) {
+		var m map[string]any
+		r.Response.Write(r.GetQueryStruct(&m))
+	})
+	s.BindHandler("/custom", func(r *ghttp.Request) {
+		var req, queryReq *Issue4751Req
+		r.SetQuery("names", "b")
+		r.SetParam("ids", 2)
+		if err := r.Parse(&req); err != nil {
+			r.Response.WriteExit(err)
+		}
+		if err := r.ParseQuery(&queryReq); err != nil {
+			r.Response.WriteExit(err)
+		}
+		r.Response.Write(req.Names, req.Ids, queryReq.Names, queryReq.Ids)
+	})
+	s.BindHandler("/reload", func(r *ghttp.Request) {
+		var req, reloadedReq *Issue4751Req
+		if err := r.Parse(&req); err != nil {
+			r.Response.WriteExit(err)
+		}
+		r.URL.RawQuery = "names=c&names=d"
+		r.ReloadParam()
+		if err := r.Parse(&reloadedReq); err != nil {
+			r.Response.WriteExit(err)
+		}
+		r.Response.Write(req.Names, reloadedReq.Names)
+	})
+	s.BindHandler("/file", func(r *ghttp.Request) {
+		var req struct {
+			Names []*ghttp.UploadFile
+		}
+		if err := r.Parse(&req); err != nil {
+			r.Response.WriteExit(err)
+		}
+		for _, file := range req.Names {
+			r.Response.Write(file.Filename)
+		}
+	})
+	s.SetDumpRouterMap(false)
+	s.Start()
+	defer s.Shutdown()
+
+	time.Sleep(100 * time.Millisecond)
+
+	gtest.C(t, func(t *gtest.T) {
+		client := g.Client()
+		client.SetPrefix(fmt.Sprintf("http://127.0.0.1:%d", s.GetListenedPort()))
+
+		t.Assert(
+			client.GetContent(ctx, "/names?names=a&names=b&ids=1&ids=2&name=x&name=y"),
+			`{"names":["a","b"],"ids":[1,2],"name":"y"}`,
+		)
+		t.Assert(client.GetContent(ctx, "/names?names=a"), `{"names":["a"],"ids":null,"name":""}`)
+		t.Assert(client.GetContent(ctx, "/names?names=a&names="), `{"names":["a",""],"ids":null,"name":""}`)
+		t.Assert(client.GetContent(ctx, "/names?names[]=a&names[]=b"), `{"names":["a","b"],"ids":null,"name":""}`)
+		// The parameters from the body have higher priority than the ones from the query.
+		t.Assert(
+			client.ContentJson().PostContent(ctx, "/names?names=a&names=b", `{"names":["c"]}`),
+			`{"names":["c"],"ids":null,"name":""}`,
+		)
+		// Even if the value from the body is the same as the last one from the query.
+		t.Assert(
+			client.ContentJson().PostContent(ctx, "/names?names=a&names=b", `{"names":"b"}`),
+			`{"names":["b"],"ids":null,"name":""}`,
+		)
+		t.Assert(
+			client.PostContent(ctx, "/names?names=a&names=b", "names=b"),
+			`{"names":["b"],"ids":null,"name":""}`,
+		)
+		// The repeated key is stored in the same way as the query map, which replaces the chars
+		// like '.' and ' ' of the key with '_'.
+		t.Assert(
+			client.GetContent(ctx, "/names?file.names=a&file.names=b"),
+			`{"ids":null,"name":"","file.names":["a","b"]}`,
+		)
+		// The query parameter retrieved by name still keeps the last value only, and so does the
+		// []byte field, which receives the value as a whole like the string field.
+		t.Assert(
+			client.GetContent(ctx, "/plain?names=a&names=b&name=x&name=y&data=c&data=d"),
+			`["a","b"],y,b,d`,
+		)
+		t.Assert(client.GetContent(ctx, "/query?Names=a&Names=b&name=x"), `["a","b"]x`)
+		// The query parameters have higher priority than the ones from the body for ParseQuery.
+		t.Assert(
+			client.ContentJson().GetContent(ctx, "/query?names=a&names=b", `{"names":"b"}`),
+			`["a","b"]`,
+		)
+		// The values set by SetQuery and SetParam override all the values of the repeated query
+		// parameters, while ParseQuery ignores the ones set by SetParam.
+		t.Assert(client.GetContent(ctx, "/custom?names=a&names=b&ids=1&ids=2"), `["b"][2]["b"][1,2]`)
+		// The repeated query parameters are retrieved again after the query string is reloaded.
+		t.Assert(client.GetContent(ctx, "/reload?names=a&names=b"), `["a","b"]["c","d"]`)
+		// The uploaded files have higher priority than the query parameters too.
+		t.Assert(
+			client.PostContent(ctx, "/file?names=a&names=b", g.Map{
+				"names": "@file:" + gtest.DataPath("upload", "file1.txt"),
+			}),
+			`file1.txt`,
+		)
+		// The pointer which is not a struct has no field to merge, and no error either.
+		t.Assert(client.GetContent(ctx, "/map?names=a&names=b"), ``)
+	})
+}

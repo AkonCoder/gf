@@ -7,10 +7,11 @@
 package gvar_test
 
 import (
-	"github.com/gogf/gf/container/gvar"
-	"github.com/gogf/gf/frame/g"
-	"github.com/gogf/gf/test/gtest"
 	"testing"
+
+	"github.com/gogf/gf/v2/container/gvar"
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/test/gtest"
 )
 
 func TestVar_ListItemValues_Map(t *testing.T) {
@@ -66,7 +67,7 @@ func TestVar_ListItemValues_Struct(t *testing.T) {
 	gtest.C(t, func(t *gtest.T) {
 		type T struct {
 			Id    int
-			Score interface{}
+			Score any
 		}
 		listStruct := g.Slice{
 			T{1, 100},

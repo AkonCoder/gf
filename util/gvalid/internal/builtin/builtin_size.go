@@ -1,0 +1,42 @@
+// Copyright GoFrame Author(https://goframe.org). All Rights Reserved.
+//
+// This Source Code Form is subject to the terms of the MIT License.
+// If a copy of the MIT was not distributed with this file,
+// You can obtain one at https://github.com/gogf/gf.
+
+package builtin
+
+import (
+	"errors"
+	"strconv"
+	"strings"
+)
+
+// RuleSize implements `size` rule:
+// Length must be :size.
+// The length is calculated using unicode string, which means one chinese character or letter both has the length of 1.
+// For a slice, an array or a map the length is the number of its elements.
+//
+// Format: size:size
+type RuleSize struct{}
+
+func init() {
+	Register(RuleSize{})
+}
+
+func (r RuleSize) Name() string {
+	return "size"
+}
+
+func (r RuleSize) Message() string {
+	return "The {field} value `{value}` length must be {size}"
+}
+
+func (r RuleSize) Run(in RunInput) error {
+	valueLen := valueLength(in.Value.Val())
+	size, err := strconv.Atoi(in.RulePattern)
+	if valueLen != size || err != nil {
+		return errors.New(strings.ReplaceAll(in.Message, "{size}", strconv.Itoa(size)))
+	}
+	return nil
+}

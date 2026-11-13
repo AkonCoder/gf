@@ -8,9 +8,10 @@ package gtimer
 
 import (
 	"container/heap"
-	"github.com/gogf/gf/container/gtype"
 	"math"
 	"sync"
+
+	"github.com/gogf/gf/v2/container/gtype"
 )
 
 // priorityQueue is an abstract data type similar to a regular queue or stack data structure in which
@@ -23,14 +24,14 @@ type priorityQueue struct {
 	nextPriority *gtype.Int64       // nextPriority stores the next priority value of the heap, which is used to check if necessary to call the Pop of heap by Timer.
 }
 
-// priorityQueueHeap is a heap manager, of which the underlying `array` is a array implementing a heap structure.
+// priorityQueueHeap is a heap manager, of which the underlying `array` is an array implementing a heap structure.
 type priorityQueueHeap struct {
 	array []priorityQueueItem
 }
 
 // priorityQueueItem stores the queue item which has a `priority` attribute to sort itself in heap.
 type priorityQueueItem struct {
-	value    interface{}
+	value    any
 	priority int64
 }
 
@@ -52,7 +53,7 @@ func (q *priorityQueue) NextPriority() int64 {
 // Push pushes a value to the queue.
 // The `priority` specifies the priority of the value.
 // The lesser the `priority` value the higher priority of the `value`.
-func (q *priorityQueue) Push(value interface{}, priority int64) {
+func (q *priorityQueue) Push(value any, priority int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	heap.Push(q.heap, priorityQueueItem{
@@ -68,7 +69,7 @@ func (q *priorityQueue) Push(value interface{}, priority int64) {
 }
 
 // Pop retrieves, removes and returns the most high priority value from the queue.
-func (q *priorityQueue) Pop() interface{} {
+func (q *priorityQueue) Pop() any {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if v := heap.Pop(q.heap); v != nil {

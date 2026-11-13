@@ -9,23 +9,25 @@
 package gutil
 
 import (
+	"context"
 	"testing"
 )
 
 var (
-	m1 = map[string]interface{}{
+	m1 = map[string]any{
 		"k1": "v1",
 	}
-	m2 = map[string]interface{}{
+	m2 = map[string]any{
 		"k2": "v2",
 	}
 )
 
 func Benchmark_TryCatch(b *testing.B) {
+	ctx := context.TODO()
 	for i := 0; i < b.N; i++ {
-		TryCatch(func() {
+		TryCatch(ctx, func(ctx context.Context) {
 
-		}, func(err error) {
+		}, func(ctx context.Context, err error) {
 
 		})
 	}

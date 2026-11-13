@@ -10,25 +10,25 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/gogf/gf/encoding/ghash"
-	"github.com/gogf/gf/errors/gerror"
-	"github.com/gogf/gf/internal/intlog"
-	"github.com/gogf/gf/os/gfsnotify"
-	"github.com/gogf/gf/os/gmlock"
-	"github.com/gogf/gf/text/gstr"
-	"github.com/gogf/gf/util/gconv"
-	"github.com/gogf/gf/util/gutil"
 	htmltpl "html/template"
 	"strconv"
 	"strings"
 	texttpl "text/template"
 
-	"github.com/gogf/gf/os/gres"
-
-	"github.com/gogf/gf/container/gmap"
-	"github.com/gogf/gf/os/gfile"
-	"github.com/gogf/gf/os/glog"
-	"github.com/gogf/gf/os/gspath"
+	"github.com/gogf/gf/v2"
+	"github.com/gogf/gf/v2/container/gmap"
+	"github.com/gogf/gf/v2/encoding/ghash"
+	"github.com/gogf/gf/v2/errors/gcode"
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/internal/intlog"
+	"github.com/gogf/gf/v2/os/gfile"
+	"github.com/gogf/gf/v2/os/gfsnotify"
+	"github.com/gogf/gf/v2/os/glog"
+	"github.com/gogf/gf/v2/os/gmlock"
+	"github.com/gogf/gf/v2/os/gres"
+	"github.com/gogf/gf/v2/os/gspath"
+	"github.com/gogf/gf/v2/text/gstr"
+	"github.com/gogf/gf/v2/util/gutil"
 )
 
 const (
@@ -36,7 +36,7 @@ const (
 	templateNameForContentParsing = "TemplateContent"
 )
 
-// fileCacheItem is the cache item for template file.
+// fileCacheItem is the cache item for the template file.
 type fileCacheItem struct {
 	path    string
 	folder  string
@@ -49,40 +49,115 @@ var (
 	templates = gmap.NewStrAnyMap(true)
 
 	// Try-folders for resource template file searching.
-	resourceTryFolders = []string{"template/", "template", "/template", "/template/"}
+	resourceTryFolders = []string{
+		"template/", "template", "/template", "/template/",
+		"resource/template/", "resource/template", "/resource/template", "/resource/template/",
+	}
+
+	// Prefix array for trying searching in the local system.
+	localSystemTryFolders = []string{"", "template/", "resource/template"}
 )
 
-// Parse parses given template file <file> with given template variables <params>
+// Parse parses given template file `file` with given template variables `params`
 // and returns the parsed template content.
 func (view *View) Parse(ctx context.Context, file string, params ...Params) (result string, err error) {
-	var tpl interface{}
-	// It caches the file, folder and its content to enhance performance.
-	r := view.fileCacheMap.GetOrSetFuncLock(file, func() interface{} {
+	var usedParams Params
+	if len(params) > 0 {
+		usedParams = params[0]
+	}
+	return view.ParseOption(ctx, Option{
+		File:    file,
+		Content: "",
+		Orphan:  false,
+		Params:  usedParams,
+	})
+}
+
+// ParseDefault parses the default template file with params.
+func (view *View) ParseDefault(ctx context.Context, params ...Params) (result string, err error) {
+	var usedParams Params
+	if len(params) > 0 {
+		usedParams = params[0]
+	}
+	return view.ParseOption(ctx, Option{
+		File:    view.config.DefaultFile,
+		Content: "",
+		Orphan:  false,
+		Params:  usedParams,
+	})
+}
+
+// ParseContent parses given template content `content` with template variables `params`
+// and returns the parsed content in []byte.
+func (view *View) ParseContent(ctx context.Context, content string, params ...Params) (string, error) {
+	var usedParams Params
+	if len(params) > 0 {
+		usedParams = params[0]
+	}
+	return view.ParseOption(ctx, Option{
+		Content: content,
+		Orphan:  false,
+		Params:  usedParams,
+	})
+}
+
+// Option for template parsing.
+//
+// Deprecated: use Options instead.
+type Option = Options
+
+// Options for template parsing.
+type Options struct {
+	File    string // Template file path in absolute or relative to searching paths.
+	Content string // Template content, it ignores `File` if `Content` is given.
+	Orphan  bool   // If true, the `File` is considered as a single file parsing without files recursively parsing from its folder.
+	Params  Params // Template parameters map.
+}
+
+// ParseOption implements template parsing using Option.
+//
+// Deprecated: use ParseWithOptions instead.
+func (view *View) ParseOption(ctx context.Context, option Option) (result string, err error) {
+	return view.ParseWithOptions(ctx, option)
+}
+
+// ParseWithOptions implements template parsing using Option.
+func (view *View) ParseWithOptions(ctx context.Context, opts Options) (result string, err error) {
+	if opts.Content != "" {
+		return view.doParseContent(ctx, opts.Content, opts.Params)
+	}
+	if opts.File == "" {
+		return "", gerror.New(`template file cannot be empty`)
+	}
+	// It caches the file, folder, and content to enhance performance.
+	r := view.fileCacheMap.GetOrSetFuncLock(opts.File, func() *fileCacheItem {
 		var (
 			path     string
 			folder   string
 			content  string
 			resource *gres.File
 		)
-		// Searching the absolute file path for <file>.
-		path, folder, resource, err = view.searchFile(file)
+		// Searching the absolute file path for `file`.
+		path, folder, resource, err = view.searchFile(ctx, opts.File)
 		if err != nil {
 			return nil
 		}
 		if resource != nil {
-			content = gconv.UnsafeBytesToStr(resource.Content())
+			content = string(resource.Content())
 		} else {
 			content = gfile.GetContentsWithCache(path)
 		}
 		// Monitor template files changes using fsnotify asynchronously.
 		if resource == nil {
-			if _, err := gfsnotify.AddOnce("gview.Parse:"+folder, folder, func(event *gfsnotify.Event) {
-				// CLEAR THEM ALL.
-				view.fileCacheMap.Clear()
-				templates.Clear()
-				gfsnotify.Exit()
-			}); err != nil {
-				intlog.Error(ctx, err)
+			if _, err = gfsnotify.AddOnce(
+				"gview.Parse:"+folder, folder, func(event *gfsnotify.Event) {
+					// CLEAR THEM ALL.
+					view.fileCacheMap.Clear()
+					templates.Clear()
+					gfsnotify.Exit()
+				},
+			); err != nil {
+				intlog.Errorf(ctx, `%+v`, err)
 			}
 		}
 		return &fileCacheItem{
@@ -94,88 +169,63 @@ func (view *View) Parse(ctx context.Context, file string, params ...Params) (res
 	if r == nil {
 		return
 	}
-	item := r.(*fileCacheItem)
 	// It's not necessary continuing parsing if template content is empty.
-	if item.content == "" {
+	if r.content == "" {
 		return "", nil
 	}
-	// Get the template object instance for <folder>.
-	tpl, err = view.getTemplate(item.path, item.folder, fmt.Sprintf(`*%s`, gfile.Ext(item.path)))
+	// If it's an Orphan option, it just parses the single file by ParseContent.
+	if opts.Orphan {
+		return view.doParseContent(ctx, r.content, opts.Params)
+	}
+	// Get the template object instance for `folder`.
+	var tpl any
+	tpl, err = view.getTemplate(r.path, r.folder, fmt.Sprintf(`*%s`, gfile.Ext(r.path)))
 	if err != nil {
 		return "", err
 	}
 	// Using memory lock to ensure concurrent safety for template parsing.
-	gmlock.LockFunc("gview.Parse:"+item.path, func() {
+	gmlock.LockFunc("gview.Parse:"+r.path, func() {
 		if view.config.AutoEncode {
-			tpl, err = tpl.(*htmltpl.Template).Parse(item.content)
+			tpl, err = tpl.(*htmltpl.Template).Parse(r.content)
 		} else {
-			tpl, err = tpl.(*texttpl.Template).Parse(item.content)
+			tpl, err = tpl.(*texttpl.Template).Parse(r.content)
 		}
-		if err != nil && item.path != "" {
-			err = gerror.WrapCode(gerror.CodeInternalError, err, item.path)
+		if err != nil && r.path != "" {
+			err = gerror.Wrap(err, r.path)
 		}
 	})
 	if err != nil {
 		return "", err
 	}
-	// Note that the template variable assignment cannot change the value
-	// of the existing <params> or view.data because both variables are pointers.
-	// It needs to merge the values of the two maps into a new map.
-	variables := gutil.MapMergeCopy(params...)
-	if len(view.data) > 0 {
-		gutil.MapMerge(variables, view.data)
-	}
-	view.setI18nLanguageFromCtx(ctx, variables)
 
-	buffer := bytes.NewBuffer(nil)
-	if view.config.AutoEncode {
-		newTpl, err := tpl.(*htmltpl.Template).Clone()
-		if err != nil {
-			return "", err
-		}
-		if err := newTpl.Execute(buffer, variables); err != nil {
-			return "", err
-		}
-	} else {
-		if err := tpl.(*texttpl.Template).Execute(buffer, variables); err != nil {
-			return "", err
-		}
-	}
-
-	// TODO any graceful plan to replace "<no value>"?
-	result = gstr.Replace(buffer.String(), "<no value>", "")
-	result = view.i18nTranslate(ctx, result, variables)
-	return result, nil
+	return view.doParseContentWithStdTemplate(ctx, tpl, opts.Params)
 }
 
-// ParseDefault parses the default template file with params.
-func (view *View) ParseDefault(ctx context.Context, params ...Params) (result string, err error) {
-	return view.Parse(ctx, view.config.DefaultFile, params...)
-}
-
-// ParseContent parses given template content <content>  with template variables <params>
+// doParseContent parses given template content `content` with template variables `params`
 // and returns the parsed content in []byte.
-func (view *View) ParseContent(ctx context.Context, content string, params ...Params) (string, error) {
+func (view *View) doParseContent(ctx context.Context, content string, params Params) (string, error) {
 	// It's not necessary continuing parsing if template content is empty.
 	if content == "" {
 		return "", nil
 	}
-	err := (error)(nil)
-	key := fmt.Sprintf("%s_%v_%v", templateNameForContentParsing, view.config.Delimiters, view.config.AutoEncode)
-	tpl := templates.GetOrSetFuncLock(key, func() interface{} {
-		if view.config.AutoEncode {
-			return htmltpl.New(templateNameForContentParsing).Delims(
+	var (
+		err error
+		key = fmt.Sprintf("%s_%v_%v", templateNameForContentParsing, view.config.Delimiters, view.config.AutoEncode)
+		tpl = templates.GetOrSetFuncLock(key, func() any {
+			if view.config.AutoEncode {
+				return htmltpl.New(templateNameForContentParsing).Delims(
+					view.config.Delimiters[0],
+					view.config.Delimiters[1],
+				).Funcs(view.funcMap)
+			}
+			return texttpl.New(templateNameForContentParsing).Delims(
 				view.config.Delimiters[0],
 				view.config.Delimiters[1],
 			).Funcs(view.funcMap)
-		}
-		return texttpl.New(templateNameForContentParsing).Delims(
-			view.config.Delimiters[0],
-			view.config.Delimiters[1],
-		).Funcs(view.funcMap)
-	})
+		})
+	)
 	// Using memory lock to ensure concurrent safety for content parsing.
-	hash := strconv.FormatUint(ghash.DJBHash64([]byte(content)), 10)
+	hash := strconv.FormatUint(ghash.DJB64([]byte(content)), 10)
 	gmlock.LockFunc("gview.ParseContent:"+hash, func() {
 		if view.config.AutoEncode {
 			tpl, err = tpl.(*htmltpl.Template).Parse(content)
@@ -184,12 +234,17 @@ func (view *View) ParseContent(ctx context.Context, content string, params ...Pa
 		}
 	})
 	if err != nil {
+		err = gerror.Wrapf(err, `template parsing failed`)
 		return "", err
 	}
+	return view.doParseContentWithStdTemplate(ctx, tpl, params)
+}
+
+func (view *View) doParseContentWithStdTemplate(ctx context.Context, tpl any, params Params) (string, error) {
 	// Note that the template variable assignment cannot change the value
-	// of the existing <params> or view.data because both variables are pointers.
+	// of the existing `params` or view.data because both variables are pointers.
 	// It needs to merge the values of the two maps into a new map.
-	variables := gutil.MapMergeCopy(params...)
+	variables := gutil.MapMergeCopy(params, view.getBuiltInParams())
 	if len(view.data) > 0 {
 		gutil.MapMerge(variables, view.data)
 	}
@@ -197,15 +252,19 @@ func (view *View) ParseContent(ctx context.Context, content string, params ...Pa
 
 	buffer := bytes.NewBuffer(nil)
 	if view.config.AutoEncode {
+		var newTpl *htmltpl.Template
 		newTpl, err := tpl.(*htmltpl.Template).Clone()
 		if err != nil {
+			err = gerror.Wrapf(err, `template clone failed`)
 			return "", err
 		}
-		if err := newTpl.Execute(buffer, variables); err != nil {
+		if err = newTpl.Execute(buffer, variables); err != nil {
+			err = gerror.Wrapf(err, `template parsing failed`)
 			return "", err
 		}
 	} else {
 		if err := tpl.(*texttpl.Template).Execute(buffer, variables); err != nil {
+			err = gerror.Wrapf(err, `template parsing failed`)
 			return "", err
 		}
 	}
@@ -215,138 +274,168 @@ func (view *View) ParseContent(ctx context.Context, content string, params ...Pa
 	return result, nil
 }
 
-// getTemplate returns the template object associated with given template file <path>.
-// It uses template cache to enhance performance, that is, it will return the same template object
-// with the same given <path>. It will also automatically refresh the template cache
-// if the template files under <path> changes (recursively).
-func (view *View) getTemplate(filePath, folderPath, pattern string) (tpl interface{}, err error) {
-	// Key for template cache.
-	key := fmt.Sprintf("%s_%v", filePath, view.config.Delimiters)
-	result := templates.GetOrSetFuncLock(key, func() interface{} {
-		tplName := filePath
-		if view.config.AutoEncode {
-			tpl = htmltpl.New(tplName).Delims(
-				view.config.Delimiters[0],
-				view.config.Delimiters[1],
-			).Funcs(view.funcMap)
-		} else {
-			tpl = texttpl.New(tplName).Delims(
-				view.config.Delimiters[0],
-				view.config.Delimiters[1],
-			).Funcs(view.funcMap)
-		}
-		// Firstly checking the resource manager.
-		if !gres.IsEmpty() {
-			if files := gres.ScanDirFile(folderPath, pattern, true); len(files) > 0 {
-				var err error
-				if view.config.AutoEncode {
-					t := tpl.(*htmltpl.Template)
-					for _, v := range files {
-						_, err = t.New(v.FileInfo().Name()).Parse(string(v.Content()))
-						if err != nil {
-							err = view.formatTemplateObjectCreatingError(v.Name(), tplName, err)
-							return nil
-						}
-					}
-				} else {
-					t := tpl.(*texttpl.Template)
-					for _, v := range files {
-						_, err = t.New(v.FileInfo().Name()).Parse(string(v.Content()))
-						if err != nil {
-							err = view.formatTemplateObjectCreatingError(v.Name(), tplName, err)
-							return nil
-						}
-					}
-				}
-				return tpl
-			}
-		}
+func (view *View) getBuiltInParams() map[string]any {
+	return map[string]any{
+		"version": gf.VERSION,
+	}
+}
 
-		// Secondly checking the file system.
-		var (
-			files []string
-		)
-		files, err = gfile.ScanDir(folderPath, pattern, true)
-		if err != nil {
-			return nil
-		}
-		if view.config.AutoEncode {
-			t := tpl.(*htmltpl.Template)
-			for _, file := range files {
-				if _, err = t.Parse(gfile.GetContents(file)); err != nil {
-					err = view.formatTemplateObjectCreatingError(file, tplName, err)
-					return nil
+// getTemplate returns the template object associated with given template file `path`.
+// It uses template cache to enhance performance, that is, it will return the same template object
+// with the same given `path`. It will also automatically refresh the template cache
+// if the template files under `path` changes (recursively).
+func (view *View) getTemplate(filePath, folderPath, pattern string) (tpl any, err error) {
+	var (
+		mapKey  = fmt.Sprintf("%s_%v", filePath, view.config.Delimiters)
+		mapFunc = func() any {
+			tplName := filePath
+			if view.config.AutoEncode {
+				tpl = htmltpl.New(tplName).Delims(
+					view.config.Delimiters[0],
+					view.config.Delimiters[1],
+				).Funcs(view.funcMap)
+			} else {
+				tpl = texttpl.New(tplName).Delims(
+					view.config.Delimiters[0],
+					view.config.Delimiters[1],
+				).Funcs(view.funcMap)
+			}
+			// Firstly, checking the resource manager.
+			if !gres.IsEmpty() {
+				if files := gres.ScanDirFile(folderPath, pattern, true); len(files) > 0 {
+					if view.config.AutoEncode {
+						var t = tpl.(*htmltpl.Template)
+						for _, v := range files {
+							_, err = t.New(v.FileInfo().Name()).Parse(string(v.Content()))
+							if err != nil {
+								err = view.formatTemplateObjectCreatingError(v.Name(), tplName, err)
+								return nil
+							}
+						}
+					} else {
+						var t = tpl.(*texttpl.Template)
+						for _, v := range files {
+							_, err = t.New(v.FileInfo().Name()).Parse(string(v.Content()))
+							if err != nil {
+								err = view.formatTemplateObjectCreatingError(v.Name(), tplName, err)
+								return nil
+							}
+						}
+					}
+					return tpl
 				}
 			}
-		} else {
-			t := tpl.(*texttpl.Template)
-			for _, file := range files {
-				if _, err = t.Parse(gfile.GetContents(file)); err != nil {
-					err = view.formatTemplateObjectCreatingError(file, tplName, err)
-					return nil
+
+			// Secondly, checking the file system,
+			// and then automatically parsing all its sub-files recursively.
+			var files []string
+			files, err = gfile.ScanDir(folderPath, pattern, true)
+			if err != nil {
+				return nil
+			}
+			if view.config.AutoEncode {
+				t := tpl.(*htmltpl.Template)
+				for _, file := range files {
+					if _, err = t.Parse(gfile.GetContents(file)); err != nil {
+						err = view.formatTemplateObjectCreatingError(file, tplName, err)
+						return nil
+					}
+				}
+			} else {
+				t := tpl.(*texttpl.Template)
+				for _, file := range files {
+					if _, err = t.Parse(gfile.GetContents(file)); err != nil {
+						err = view.formatTemplateObjectCreatingError(file, tplName, err)
+						return nil
+					}
 				}
 			}
+			return tpl
 		}
-		return tpl
-	})
+	)
+	result := templates.GetOrSetFuncLock(mapKey, mapFunc)
 	if result != nil {
 		return result, nil
 	}
 	return
 }
 
-// formatTemplateObjectCreatingError formats the error that creted from creating template object.
+// formatTemplateObjectCreatingError formats the error that created from creating the template object.
 func (view *View) formatTemplateObjectCreatingError(filePath, tplName string, err error) error {
 	if err != nil {
-		return gerror.NewCodeSkip(gerror.CodeInternalError, 1, gstr.Replace(err.Error(), tplName, filePath))
+		return gerror.NewSkip(1, gstr.Replace(err.Error(), tplName, filePath))
 	}
 	return nil
 }
 
-// searchFile returns the found absolute path for <file> and its template folder path.
-// Note that, the returned <folder> is the template folder path, but not the folder of
-// the returned template file <path>.
-func (view *View) searchFile(file string) (path string, folder string, resource *gres.File, err error) {
+// searchFile returns the absolute path of the `file` and its template folder path.
+// The returned `folder` is the template folder path, not the folder of the template file `path`.
+func (view *View) searchFile(ctx context.Context, file string) (path string, folder string, resource *gres.File, err error) {
+	var (
+		tempPath    string
+		trimmedFile = strings.TrimLeft(file, `\/`)
+	)
 	// Firstly checking the resource manager.
 	if !gres.IsEmpty() {
+		// Search folders.
+		if path == "" {
+			view.searchPaths.RLockFunc(func(array []string) {
+				for _, searchPath := range array {
+					tempPath = strings.TrimRight(searchPath, `\/`) + `/` + trimmedFile
+					if tmpFile := gres.Get(tempPath); tmpFile != nil {
+						path = tmpFile.Name()
+						folder = searchPath
+						resource = tmpFile
+						return
+					}
+
+					for _, tryFolder := range resourceTryFolders {
+						tempPath = strings.TrimRight(searchPath, `\/`) + `/` + strings.TrimRight(tryFolder, `\/`) + `/` + file
+						if tmpFile := gres.Get(tempPath); tmpFile != nil {
+							path = tmpFile.Name()
+							folder = searchPath + tryFolder
+							resource = tmpFile
+							return
+						}
+					}
+				}
+			})
+		}
 		// Try folders.
-		for _, folderPath := range resourceTryFolders {
-			if resource = gres.Get(folderPath + file); resource != nil {
-				path = resource.Name()
-				folder = folderPath
-				return
+		if path == "" {
+			for _, tryFolder := range resourceTryFolders {
+				tempPath = strings.TrimRight(tryFolder, `\/`) + `/` + trimmedFile
+				if tmpFile := gres.Get(tempPath); tmpFile != nil {
+					path = tmpFile.Name()
+					folder = tryFolder
+					resource = tmpFile
+					return
+				}
 			}
 		}
-		// Search folders.
-		view.paths.RLockFunc(func(array []string) {
-			for _, v := range array {
-				v = strings.TrimRight(v, "/"+gfile.Separator)
-				if resource = gres.Get(v + "/" + file); resource != nil {
-					path = resource.Name()
-					folder = v
-					break
-				}
-				if resource = gres.Get(v + "/template/" + file); resource != nil {
-					path = resource.Name()
-					folder = v + "/template"
-					break
-				}
-			}
-		})
 	}
 
-	// Secondly checking the file system.
+	// Secondly, checking the file system.
 	if path == "" {
-		view.paths.RLockFunc(func(array []string) {
-			for _, folderPath := range array {
-				folderPath = strings.TrimRight(folderPath, gfile.Separator)
-				if path, _ = gspath.Search(folderPath, file); path != "" {
-					folder = folderPath
-					break
-				}
-				if path, _ = gspath.Search(folderPath+gfile.Separator+"template", file); path != "" {
-					folder = folderPath + gfile.Separator + "template"
-					break
+		// Absolute path.
+		path = gfile.RealPath(file)
+		if path != "" {
+			folder = gfile.Dir(path)
+			return
+		}
+		// In search paths.
+		view.searchPaths.RLockFunc(func(array []string) {
+			for _, searchPath := range array {
+				searchPath = gstr.TrimRight(searchPath, `\/`)
+				for _, tryFolder := range localSystemTryFolders {
+					relativePath := gstr.TrimRight(
+						gfile.Join(tryFolder, file),
+						`\/`,
+					)
+					if path, _ = gspath.Search(searchPath, relativePath); path != "" {
+						folder = gfile.Join(searchPath, tryFolder)
+						return
+					}
 				}
 			}
 		})
@@ -355,28 +444,27 @@ func (view *View) searchFile(file string) (path string, folder string, resource 
 	// Error checking.
 	if path == "" {
 		buffer := bytes.NewBuffer(nil)
-		if view.paths.Len() > 0 {
-			buffer.WriteString(fmt.Sprintf("[gview] cannot find template file \"%s\" in following paths:", file))
-			view.paths.RLockFunc(func(array []string) {
+		if view.searchPaths.Len() > 0 {
+			fmt.Fprintf(buffer, "cannot find template file \"%s\" in following paths:", file)
+			view.searchPaths.RLockFunc(func(array []string) {
 				index := 1
-				for _, folderPath := range array {
-					folderPath = strings.TrimRight(folderPath, "/")
-					if folderPath == "" {
-						folderPath = "/"
+				for _, searchPath := range array {
+					searchPath = gstr.TrimRight(searchPath, `\/`)
+					for _, tryFolder := range localSystemTryFolders {
+						fmt.Fprintf(buffer,
+							"\n%d. %s",
+							index, gfile.Join(searchPath, tryFolder))
+						index++
 					}
-					buffer.WriteString(fmt.Sprintf("\n%d. %s", index, folderPath))
-					index++
-					buffer.WriteString(fmt.Sprintf("\n%d. %s", index, strings.TrimRight(folderPath, "/")+gfile.Separator+"template"))
-					index++
 				}
 			})
 		} else {
-			buffer.WriteString(fmt.Sprintf("[gview] cannot find template file \"%s\" with no path set/add", file))
+			fmt.Fprintf(buffer, "cannot find template file \"%s\" with no path set/add", file)
 		}
 		if errorPrint() {
-			glog.Error(buffer.String())
+			glog.Error(ctx, buffer.String())
 		}
-		err = gerror.NewCodef(gerror.CodeInvalidParameter, `template file "%s" not found`, file)
+		err = gerror.NewCodef(gcode.CodeInvalidParameter, `template file "%s" not found`, file)
 	}
 	return
 }

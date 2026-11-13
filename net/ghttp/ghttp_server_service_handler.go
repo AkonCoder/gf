@@ -8,47 +8,70 @@ package ghttp
 
 import (
 	"bytes"
-	"github.com/gogf/gf/debug/gdebug"
-	"github.com/gogf/gf/errors/gerror"
+	"context"
 	"reflect"
 	"strings"
 
-	"github.com/gogf/gf/text/gstr"
+	"github.com/gogf/gf/v2/errors/gcode"
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/os/gstructs"
+	"github.com/gogf/gf/v2/text/gstr"
+	"github.com/gogf/gf/v2/util/gtag"
 )
 
-// BindHandler registers a handler function to server with given pattern.
-// The parameter `handler` can be type of:
-// func(*ghttp.Request)
-// func(context.Context)
-// func(context.Context,TypeRequest)
-// func(context.Context,TypeRequest) error
-// func(context.Context,TypeRequest)(TypeResponse,error)
-func (s *Server) BindHandler(pattern string, handler interface{}) {
+// BindHandler registers a handler function to server with a given pattern.
+//
+// Note that the parameter `handler` can be type of:
+// 1. func(*ghttp.Request)
+// 2. func(context.Context, BizRequest)(BizResponse, error)
+func (s *Server) BindHandler(pattern string, handler any) {
+	var ctx = context.TODO()
 	funcInfo, err := s.checkAndCreateFuncInfo(handler, "", "", "")
 	if err != nil {
-		s.Logger().Error(err.Error())
-		return
+		s.Logger().Fatalf(ctx, `%+v`, err)
 	}
-	s.doBindHandler(pattern, funcInfo, nil, "")
+	s.doBindHandler(ctx, doBindHandlerInput{
+		Prefix:     "",
+		Pattern:    pattern,
+		FuncInfo:   funcInfo,
+		Middleware: nil,
+		Source:     "",
+	})
+}
+
+type doBindHandlerInput struct {
+	Prefix     string
+	Pattern    string
+	FuncInfo   handlerFuncInfo
+	Middleware []HandlerFunc
+	Source     string
 }
 
 // doBindHandler registers a handler function to server with given pattern.
-// The parameter <pattern> is like:
+//
+// The parameter `pattern` is like:
 // /user/list, put:/user, delete:/user, post:/user@goframe.org
-func (s *Server) doBindHandler(pattern string, funcInfo handlerFuncInfo, middleware []HandlerFunc, source string) {
-	s.setHandler(pattern, &handlerItem{
-		Name:       gdebug.FuncPath(funcInfo.Func),
-		Type:       handlerTypeHandler,
-		Info:       funcInfo,
-		Middleware: middleware,
-		Source:     source,
+func (s *Server) doBindHandler(ctx context.Context, in doBindHandlerInput) {
+	s.setHandler(ctx, setHandlerInput{
+		Prefix:  in.Prefix,
+		Pattern: in.Pattern,
+		HandlerItem: &HandlerItem{
+			Type:       HandlerTypeHandler,
+			Info:       in.FuncInfo,
+			Middleware: in.Middleware,
+			Source:     in.Source,
+		},
 	})
 }
 
 // bindHandlerByMap registers handlers to server using map.
-func (s *Server) bindHandlerByMap(m map[string]*handlerItem) {
-	for p, h := range m {
-		s.setHandler(p, h)
+func (s *Server) bindHandlerByMap(ctx context.Context, prefix string, m map[string]*HandlerItem) {
+	for pattern, handler := range m {
+		s.setHandler(ctx, setHandlerInput{
+			Prefix:      prefix,
+			Pattern:     pattern,
+			HandlerItem: handler,
+		})
 	}
 }
 
@@ -58,21 +81,22 @@ func (s *Server) bindHandlerByMap(m map[string]*handlerItem) {
 // Rule 2: The URI in pattern contains the {.method} keyword, it then replaces the keyword with the method name;
 // Rule 2: If Rule 1 is not met, it then adds the method name directly to the URI in the pattern;
 //
-// The parameter <allowAppend> specifies whether allowing appending method name to the tail of pattern.
+// The parameter `allowAppend` specifies whether allowing appending method name to the tail of pattern.
 func (s *Server) mergeBuildInNameToPattern(pattern string, structName, methodName string, allowAppend bool) string {
 	structName = s.nameToUri(structName)
 	methodName = s.nameToUri(methodName)
-	pattern = strings.Replace(pattern, "{.struct}", structName, -1)
-	if strings.Index(pattern, "{.method}") != -1 {
-		return strings.Replace(pattern, "{.method}", methodName, -1)
+	pattern = strings.ReplaceAll(pattern, "{.struct}", structName)
+	if strings.Contains(pattern, "{.method}") {
+		return strings.ReplaceAll(pattern, "{.method}", methodName)
 	}
 	if !allowAppend {
 		return pattern
 	}
 	// Check domain parameter.
-	array := strings.Split(pattern, "@")
-	uri := array[0]
-	uri = strings.TrimRight(uri, "/") + "/" + methodName
+	var (
+		array = strings.Split(pattern, "@")
+		uri   = strings.TrimRight(array[0], "/") + "/" + methodName
+	)
 	// Append the domain parameter to URI.
 	if len(array) > 1 {
 		return uri + "@" + array[1]
@@ -80,7 +104,7 @@ func (s *Server) mergeBuildInNameToPattern(pattern string, structName, methodNam
 	return uri
 }
 
-// nameToUri converts the given name to URL format using following rules:
+// nameToUri converts the given name to the URL format using the following rules:
 // Rule 0: Convert all method names to lowercase, add char '-' between words.
 // Rule 1: Do not convert the method name, construct the URI with the original method name.
 // Rule 2: Convert all method names to lowercase, no connecting symbols between words.
@@ -122,47 +146,345 @@ func (s *Server) nameToUri(name string) string {
 	}
 }
 
-func (s *Server) checkAndCreateFuncInfo(f interface{}, pkgPath, objName, methodName string) (info handlerFuncInfo, err error) {
-	handlerFunc, ok := f.(HandlerFunc)
-	if !ok {
-		reflectType := reflect.TypeOf(f)
-		if reflectType.NumIn() == 0 || reflectType.NumIn() > 2 || reflectType.NumOut() > 2 {
-			if pkgPath != "" {
-				err = gerror.NewCodef(
-					gerror.CodeInvalidParameter,
-					`invalid handler: %s.%s.%s defined as "%s", but "func(*ghttp.Request)" or "func(context.Context)/func(context.Context,Request)/func(context.Context,Request) error/func(context.Context,Request)(Response,error)" is required`,
-					pkgPath, objName, methodName, reflect.TypeOf(f).String(),
-				)
-			} else {
-				err = gerror.NewCodef(
-					gerror.CodeInvalidParameter,
-					`invalid handler: defined as "%s", but "func(*ghttp.Request)" or "func(context.Context)/func(context.Context,Request)/func(context.Context,Request) error/func(context.Context,Request)(Response,error)" is required`,
-					reflect.TypeOf(f).String(),
-				)
-			}
-			return
-		}
+func (s *Server) checkAndCreateFuncInfo(
+	f any, pkgPath, structName, methodName string,
+) (funcInfo handlerFuncInfo, err error) {
+	funcInfo = handlerFuncInfo{
+		Type:  reflect.TypeOf(f),
+		Value: reflect.ValueOf(f),
+	}
+	if handlerFunc, ok := f.(HandlerFunc); ok {
+		funcInfo.Func = handlerFunc
+		return
+	}
 
-		if reflectType.In(0).String() != "context.Context" {
+	var (
+		reflectType    = funcInfo.Type
+		inputObject    reflect.Value
+		inputObjectPtr any
+	)
+	if reflectType.NumIn() != 2 || reflectType.NumOut() != 2 {
+		if pkgPath != "" {
 			err = gerror.NewCodef(
-				gerror.CodeInvalidParameter,
-				`invalid handler: defined as "%s", but the first input parameter should be type of "context.Context"`,
-				reflect.TypeOf(f).String(),
+				gcode.CodeInvalidParameter,
+				`invalid handler: %s.%s.%s defined as "%s", but "func(*ghttp.Request)" or "func(context.Context, *BizReq)(*BizRes, error)" is required`,
+				pkgPath, structName, methodName, reflectType.String(),
+			)
+		} else {
+			err = gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: defined as "%s", but "func(*ghttp.Request)" or "func(context.Context, *BizReq)(*BizRes, error)" is required`,
+				reflectType.String(),
+			)
+		}
+		return
+	}
+
+	if !reflectType.In(0).Implements(reflect.TypeOf((*context.Context)(nil)).Elem()) {
+		err = gerror.NewCodef(
+			gcode.CodeInvalidParameter,
+			`invalid handler: defined as "%s", but the first input parameter should be type of "context.Context"`,
+			reflectType.String(),
+		)
+		return
+	}
+
+	if !reflectType.Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {
+		err = gerror.NewCodef(
+			gcode.CodeInvalidParameter,
+			`invalid handler: defined as "%s", but the last output parameter should be type of "error"`,
+			reflectType.String(),
+		)
+		return
+	}
+
+	if reflectType.In(1).Kind() != reflect.Pointer ||
+		(reflectType.In(1).Kind() == reflect.Pointer && reflectType.In(1).Elem().Kind() != reflect.Struct) {
+		err = gerror.NewCodef(
+			gcode.CodeInvalidParameter,
+			`invalid handler: defined as "%s", but the second input parameter should be type of pointer to struct like "*BizReq"`,
+			reflectType.String(),
+		)
+		return
+	}
+
+	// Do not enable this logic, as many users are already using none struct pointer type
+	// as the first output parameter.
+	/*
+		if reflectType.Out(0).Kind() != reflect.Pointer ||
+			(reflectType.Out(0).Kind() == reflect.Pointer && reflectType.Out(0).Elem().Kind() != reflect.Struct) {
+			err = gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: defined as "%s", but the first output parameter should be type of pointer to struct like "*BizRes"`,
+				reflectType.String(),
 			)
 			return
 		}
+	*/
 
-		if reflectType.NumOut() > 0 && reflectType.Out(reflectType.NumOut()-1).String() != "error" {
-			err = gerror.NewCodef(
-				gerror.CodeInvalidParameter,
-				`invalid handler: defined as "%s", but the last output parameter should be type of "error"`,
-				reflect.TypeOf(f).String(),
-			)
-			return
+	funcInfo.IsStrictRoute = true
+
+	inputObject = reflect.New(funcInfo.Type.In(1).Elem())
+	inputObjectPtr = inputObject.Interface()
+
+	// It retrieves and returns the request struct fields.
+	fields, err := gstructs.Fields(gstructs.FieldsInput{
+		Pointer:         inputObjectPtr,
+		RecursiveOption: gstructs.RecursiveOptionEmbedded,
+	})
+	if err != nil {
+		return funcInfo, err
+	}
+	funcInfo.ReqStructFields = fields
+	funcInfo.ReqStructTags = scanRequestStructTags(funcInfo.Type.In(1), fields)
+	if err = funcInfo.checkDuplicatedInTag(); err != nil {
+		return funcInfo, err
+	}
+	if err = funcInfo.checkAndCreateReqBodyField(); err != nil {
+		return funcInfo, err
+	}
+	funcInfo.Func = createRouterFunc(funcInfo)
+	return
+}
+
+// requestStructTags marks the tag usages of a request struct, which is
+// prechecked once at handler registration for the request handling to skip the
+// tag-driven work that the struct does not use.
+//
+// Note that it never skips the work that might take effect: the raw tag values
+// are checked instead of the parsed ones, as the tag variables can be
+// registered or updated later in the boot procedure, see package gtag; and the
+// tags are checked on exactly the scope that their handling covers, see
+// scanRequestStructTags.
+type requestStructTags struct {
+	HasValid   bool // Whether any field uses the `valid`/`v` tag.
+	HasIn      bool // Whether any field uses the `in` tag.
+	HasDefault bool // Whether any field uses the `default`/`d` tag.
+}
+
+// scanRequestStructTags reports the tag usages of the given request struct,
+// which is precomputed at handler registration for the request handling to skip
+// the tag-driven work that the struct does not use.
+//
+// It is called once at handler registration.
+//
+// Note that the raw tag values are checked instead of the parsed ones, as the
+// tag variables might be registered or updated later in the boot procedure, see
+// package gtag. Keep the checked scopes in sync with their handling:
+//   - the `in` and `default` tags are checked from the given request struct
+//     fields, which are exactly the fields the parameter merging handles;
+//   - the `valid` tag is checked from the whole type graph, as the validation
+//     also walks into the nested attribute types, see the doCheckValueRecursively
+//     of package gvalid.
+func scanRequestStructTags(requestType reflect.Type, requestFields []gstructs.Field) (tags requestStructTags) {
+	for _, field := range requestFields {
+		if field.Field.Tag.Get(gtag.In) != "" {
+			tags.HasIn = true
+		}
+		if field.Field.Tag.Get(gtag.Default) != "" || field.Field.Tag.Get(gtag.DefaultShort) != "" {
+			tags.HasDefault = true
 		}
 	}
-	info.Func = handlerFunc
-	info.Type = reflect.TypeOf(f)
-	info.Value = reflect.ValueOf(f)
+	tags.HasValid = hasValidTagInType(requestType, make(map[reflect.Type]struct{}))
 	return
+}
+
+// hasValidTagInType checks and returns whether the `valid` tag is used by the
+// given type or by any type reachable from its attributes.
+func hasValidTagInType(structType reflect.Type, visited map[reflect.Type]struct{}) bool {
+	// It walks the pointer types by dereferencing, and marks each type as visited,
+	// which avoids both the infinite recursion for the self reference types and the
+	// infinite dereference for the cyclic pointer types like `type P *P`, whose
+	// element type is itself.
+	for {
+		if _, ok := visited[structType]; ok {
+			return false
+		}
+		visited[structType] = struct{}{}
+		if structType.Kind() != reflect.Pointer {
+			break
+		}
+		structType = structType.Elem()
+	}
+	switch structType.Kind() {
+	case reflect.Struct:
+		for i := 0; i < structType.NumField(); i++ {
+			var field = structType.Field(i)
+			if field.Tag.Get(gtag.Valid) != "" || field.Tag.Get(gtag.ValidShort) != "" {
+				return true
+			}
+			if hasValidTagInType(field.Type, visited) {
+				return true
+			}
+		}
+
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return hasValidTagInType(structType.Elem(), visited)
+	}
+	return false
+}
+
+// checkDuplicatedInTag checks and returns error if the `in` tag is declared with conflicting
+// values on a request struct field, which makes the parameter location ambiguous: the request
+// handling resolves the `in` tag with the first value as the reflect.StructTag does, while the
+// tag map used by the document generation keeps the last one.
+func (f *handlerFuncInfo) checkDuplicatedInTag() error {
+	for _, field := range f.ReqStructFields {
+		// The field Tag keeps the first value of a tag key, while the parsed tag map keeps the
+		// last one, so a difference between them means the key is declared more than once with
+		// different values.
+		var (
+			firstValue = field.Tag(gtag.In)
+			lastValue  = gstructs.ParseTag(field.TagStr())[gtag.In]
+		)
+		if firstValue != lastValue {
+			return gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: the request struct field "%s" declares the in tag with conflicting `+
+					`values "%s" and "%s"`,
+				field.Name(), firstValue, lastValue,
+			)
+		}
+	}
+	return nil
+}
+
+// checkAndCreateReqBodyField retrieves the request struct field that receives the whole request
+// body, which is declared by the `body:"*"` tag on the field.
+//
+// The request body is only able to be received by one field, so it returns error if there are
+// multiple fields tagged with `body:"*"`. The tag value should be gtag.BodyValueAll, and the
+// field can not be tagged with the `in` tag at the same time. It also returns error if the field
+// can not receive the JSON array request body: a non-slice type, or an uploading file type, as
+// files are received by the ordinary request struct fields through the multipart/form-data
+// request.
+//
+// It is called once at handler registration, which also resolves the tag name of the field for
+// the request handling to remove the request parameter of the same name.
+func (f *handlerFuncInfo) checkAndCreateReqBodyField() error {
+	for _, field := range f.ReqStructFields {
+		bodyTagValue, hasBodyTag := field.TagLookup(gtag.Body)
+		if !hasBodyTag {
+			continue
+		}
+		if bodyTagValue != gtag.BodyValueAll {
+			return gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: invalid body tag value "%s" for the request struct field "%s", `+
+					`which should be "%s" to receive the whole request body`,
+				bodyTagValue, field.Name(), gtag.BodyValueAll,
+			)
+		}
+		if inTagValue := field.TagIn(); inTagValue != "" {
+			return gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: the request struct field "%s" can not be tagged with both `+
+					`body:"*" and in:"%s"`,
+				field.Name(), inTagValue,
+			)
+		}
+		if f.ReqBodyFieldName != "" {
+			return gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: only one request struct field is allowed to be tagged with body:"*", `+
+					`but got both "%s" and "%s"`,
+				f.ReqBodyFieldName, field.Name(),
+			)
+		}
+		var fieldType = field.Type().Type
+		for fieldType.Kind() == reflect.Pointer {
+			fieldType = fieldType.Elem()
+		}
+		if isFileType(fieldType) {
+			return gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: the request struct field "%s" tagged with body:"*" is of file type "%s"; `+
+					`files are uploaded by the multipart/form-data request and received by the ordinary `+
+					`fields of the request struct, which does not need the body:"*" tag`,
+				field.Name(), field.Type().String(),
+			)
+		}
+		if fieldType.Kind() != reflect.Slice {
+			var hint string
+			switch fieldType.Kind() {
+			case reflect.Array:
+				hint = `; a fixed-size array can be replaced by a slice with a length validation rule`
+			case reflect.Struct, reflect.Map, reflect.Interface:
+				hint = `; an object request body is received by the ordinary fields of the request ` +
+					`struct, which does not need the body:"*" tag`
+			default:
+			}
+			return gerror.NewCodef(
+				gcode.CodeInvalidParameter,
+				`invalid handler: the request struct field "%s" tagged with body:"*" should be type of `+
+					`slice, but got "%s"%s`,
+				field.Name(), field.Type().String(), hint,
+			)
+		}
+		f.ReqBodyFieldName = field.Name()
+		// The tag name is also resolved here, as the request handling removes the request
+		// parameter of the same name before the struct converting, which is matched with a
+		// higher priority than the field name by the struct converting.
+		f.ReqBodyFieldTagName = field.TagPriorityName()
+	}
+	return nil
+}
+
+// isFileType checks and returns whether given golang type is of the uploading file type
+// `UploadFile`, including its pointer and slice forms, for example: *UploadFile, UploadFile,
+// []*UploadFile, UploadFiles.
+func isFileType(fieldType reflect.Type) bool {
+	for fieldType.Kind() == reflect.Pointer || fieldType.Kind() == reflect.Slice {
+		fieldType = fieldType.Elem()
+	}
+	return fieldType == reflect.TypeOf(UploadFile{})
+}
+
+func createRouterFunc(funcInfo handlerFuncInfo) func(r *Request) {
+	return func(r *Request) {
+		var (
+			ok          bool
+			err         error
+			inputValues = []reflect.Value{
+				reflect.ValueOf(r.Context()),
+			}
+		)
+		if funcInfo.Type.NumIn() == 2 {
+			var inputObject reflect.Value
+			if funcInfo.Type.In(1).Kind() == reflect.Pointer {
+				inputObject = reflect.New(funcInfo.Type.In(1).Elem())
+				// The validation is prechecked unnecessary for the request struct
+				// at handler registration, see handlerFuncInfo.ReqStructTags.
+				// The flags are read from the handler item here, which is the same
+				// source the parameter merging reads, instead of the copied funcInfo.
+				r.error = r.doParse(inputObject.Interface(), parseTypeRequest,
+					r.serveHandler.Handler.Info.ReqStructTags.HasValid)
+			} else {
+				inputObject = reflect.New(funcInfo.Type.In(1).Elem()).Elem()
+				r.error = r.Parse(inputObject.Addr().Interface())
+			}
+			if r.error != nil {
+				return
+			}
+			inputValues = append(inputValues, inputObject)
+		}
+		// Call handler with dynamic created parameter values.
+		results := funcInfo.Value.Call(inputValues)
+		switch len(results) {
+		case 1:
+			if !results[0].IsNil() {
+				if err, ok = results[0].Interface().(error); ok {
+					r.error = err
+				}
+			}
+
+		case 2:
+			r.handlerResponse = results[0].Interface()
+			if !results[1].IsNil() {
+				if err, ok = results[1].Interface().(error); ok {
+					r.error = err
+				}
+			}
+		}
+	}
 }

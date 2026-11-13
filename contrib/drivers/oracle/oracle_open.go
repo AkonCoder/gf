@@ -1,0 +1,64 @@
+// Copyright GoFrame Author(https://goframe.org). All Rights Reserved.
+//
+// This Source Code Form is subject to the terms of the MIT License.
+// If a copy of the MIT was not distributed with this file,
+// You can obtain one at https://github.com/gogf/gf.
+
+package oracle
+
+import (
+	"database/sql"
+	"strings"
+
+	gora "github.com/sijms/go-ora/v2"
+
+	"github.com/gogf/gf/v2/database/gdb"
+	"github.com/gogf/gf/v2/errors/gcode"
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/util/gconv"
+)
+
+// Open creates and returns an underlying sql.DB object for oracle.
+func (d *Driver) Open(config *gdb.ConfigNode) (db *sql.DB, err error) {
+	source := gora.BuildUrl(
+		config.Host, gconv.Int(config.Port), config.Name, config.User, config.Pass, openOptions(config),
+	)
+	connector, err := gora.GetDefaultDriver().OpenConnector(source)
+	if err != nil {
+		return nil, gerror.WrapCodef(
+			gcode.CodeDbOperationError, err,
+			`open oracle connector failed by source "%s"`, source,
+		)
+	}
+	return sql.OpenDB(detachCancelConnector{Connector: connector}), nil
+}
+
+// openOptions returns the options of the underlying driver for `config`. An option given in
+// `config.Extra` replaces the default option of the same name in any letter case.
+func openOptions(config *gdb.ConfigNode) map[string]string {
+	options := map[string]string{
+		"CONNECTION TIMEOUT": "60",
+		"PREFETCH_ROWS":      "25",
+	}
+
+	if config.Debug {
+		options["TRACE FILE"] = "oracle_trace.log"
+	}
+	// [username:[password]@]host[:port][/service_name][?param1=value1&...&paramN=valueN]
+	if config.Extra != "" {
+		// fix #3226
+		list := strings.Split(config.Extra, "&")
+		for _, v := range list {
+			kv := strings.Split(v, "=")
+			if len(kv) == 2 {
+				for key := range options {
+					if strings.EqualFold(key, kv[0]) {
+						delete(options, key)
+					}
+				}
+				options[kv[0]] = kv[1]
+			}
+		}
+	}
+	return options
+}

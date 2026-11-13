@@ -7,20 +7,20 @@
 package gdb
 
 import (
-	"github.com/gogf/gf/container/gvar"
-	"github.com/gogf/gf/encoding/gparser"
-	"github.com/gogf/gf/util/gconv"
+	"database/sql"
 	"math"
-)
+	"reflect"
 
-// Interface converts and returns `r` as type of interface{}.
-func (r Result) Interface() interface{} {
-	return r
-}
+	"github.com/gogf/gf/v2/container/gvar"
+	"github.com/gogf/gf/v2/encoding/gjson"
+	"github.com/gogf/gf/v2/internal/empty"
+	"github.com/gogf/gf/v2/internal/reflection"
+	"github.com/gogf/gf/v2/util/gconv"
+)
 
 // IsEmpty checks and returns whether `r` is empty.
 func (r Result) IsEmpty() bool {
-	return r.Len() == 0
+	return r == nil || r.Len() == 0
 }
 
 // Len returns the length of result list.
@@ -33,7 +33,7 @@ func (r Result) Size() int {
 	return r.Len()
 }
 
-// Chunk splits an Result into multiple Results,
+// Chunk splits a Result into multiple Results,
 // the size of each array is determined by `size`.
 // The last chunk may contain less than size elements.
 func (r Result) Chunk(size int) []Result {
@@ -56,14 +56,14 @@ func (r Result) Chunk(size int) []Result {
 
 // Json converts `r` to JSON format content.
 func (r Result) Json() string {
-	content, _ := gparser.VarToJson(r.List())
-	return string(content)
+	content, _ := gjson.New(r.List()).ToJsonString()
+	return content
 }
 
 // Xml converts `r` to XML format content.
 func (r Result) Xml(rootTag ...string) string {
-	content, _ := gparser.VarToXml(r.List(), rootTag...)
-	return string(content)
+	content, _ := gjson.New(r.List()).ToXmlString(rootTag...)
+	return content
 }
 
 // List converts `r` to a List.
@@ -78,8 +78,8 @@ func (r Result) List() List {
 // Array retrieves and returns specified column values as slice.
 // The parameter `field` is optional is the column field is only one.
 // The default `field` is the first field name of the first item in `Result` if parameter `field` is not given.
-func (r Result) Array(field ...string) []Value {
-	array := make([]Value, len(r))
+func (r Result) Array(field ...string) Array {
+	array := make(Array, len(r))
 	if len(r) == 0 {
 		return array
 	}
@@ -87,7 +87,7 @@ func (r Result) Array(field ...string) []Value {
 	if len(field) > 0 && field[0] != "" {
 		key = field[0]
 	} else {
-		for k, _ := range r[0] {
+		for k := range r[0] {
 			key = k
 			break
 		}
@@ -102,9 +102,9 @@ func (r Result) Array(field ...string) []Value {
 // Note that the item value may be type of slice.
 func (r Result) MapKeyValue(key string) map[string]Value {
 	var (
-		s              = ""
+		s              string
 		m              = make(map[string]Value)
-		tempMap        = make(map[string][]interface{})
+		tempMap        = make(map[string][]any)
 		hasMultiValues bool
 	)
 	for _, item := range r {
@@ -194,6 +194,35 @@ func (r Result) RecordKeyUint(key string) map[uint]Record {
 
 // Structs converts `r` to struct slice.
 // Note that the parameter `pointer` should be type of *[]struct/*[]*struct.
-func (r Result) Structs(pointer interface{}) (err error) {
-	return gconv.StructsTag(r, pointer, OrmTagForStruct)
+// It also accepts *[]map/*[]*map, which are filled with the same values as List.
+func (r Result) Structs(pointer any) (err error) {
+	// If the result is empty and the target pointer is not empty, it returns error.
+	if r.IsEmpty() {
+		if !empty.IsEmpty(pointer, true) {
+			return sql.ErrNoRows
+		}
+		return nil
+	}
+	// Struct converting does not fill map elements, so map slices are
+	// converted from List instead.
+	if reflectInfo := reflection.OriginTypeAndKind(pointer); reflectInfo.OriginKind == reflect.Slice {
+		elemType := reflectInfo.OriginType.Elem()
+		if elemType.Kind() == reflect.Pointer {
+			elemType = elemType.Elem()
+		}
+		if elemType.Kind() == reflect.Map {
+			return converter.Scan(r.List(), pointer, gconv.ScanOption{ContinueOnError: true})
+		}
+	}
+	var (
+		sliceOption  = gconv.SliceOption{ContinueOnError: true}
+		structOption = gconv.StructOption{
+			PriorityTag:     OrmTagForStruct,
+			ContinueOnError: true,
+		}
+	)
+	return converter.Structs(r, pointer, gconv.StructsOption{
+		SliceOption:  sliceOption,
+		StructOption: structOption,
+	})
 }

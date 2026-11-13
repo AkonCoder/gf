@@ -6,66 +6,54 @@
 
 package gconv
 
-import (
-	"github.com/gogf/gf/errors/gerror"
-	"reflect"
-)
-
-// Scan automatically calls MapToMap, MapToMaps, Struct or Structs function according to
-// the type of parameter `pointer` to implement the converting.
-// It calls function MapToMap if `pointer` is type of *map to do the converting.
-// It calls function MapToMaps if `pointer` is type of *[]map/*[]*map to do the converting.
-// It calls function Struct if `pointer` is type of *struct/**struct to do the converting.
-// It calls function Structs if `pointer` is type of *[]struct/*[]*struct to do the converting.
-func Scan(params interface{}, pointer interface{}, mapping ...map[string]string) (err error) {
-	var (
-		pointerType = reflect.TypeOf(pointer)
-		pointerKind = pointerType.Kind()
-	)
-	if pointerKind != reflect.Ptr {
-		return gerror.NewCodef(gerror.CodeInvalidParameter, "params should be type of pointer, but got: %v", pointerKind)
+// Scan automatically checks the type of `pointer` and converts `params` to `pointer`.
+// It supports various types of parameter conversions, including:
+// 1. Basic types (int, string, float, etc.)
+// 2. Pointer types
+// 3. Slice types
+// 4. Map types
+// 5. Struct types
+//
+// The `paramKeyToAttrMap` parameter is used for mapping between attribute names and parameter keys.
+// TODO: change `paramKeyToAttrMap` to `ScanOption` to be more scalable; add `DeepCopy` option for `ScanOption`.
+func Scan(srcValue any, dstPointer any, paramKeyToAttrMap ...map[string]string) (err error) {
+	option := ScanOption{
+		ContinueOnError: true,
 	}
-	var (
-		pointerElem     = pointerType.Elem()
-		pointerElemKind = pointerElem.Kind()
-	)
-	switch pointerElemKind {
-	case reflect.Map:
-		return MapToMap(params, pointer, mapping...)
-
-	case reflect.Array, reflect.Slice:
-		var (
-			sliceElem     = pointerElem.Elem()
-			sliceElemKind = sliceElem.Kind()
-		)
-		for sliceElemKind == reflect.Ptr {
-			sliceElem = sliceElem.Elem()
-			sliceElemKind = sliceElem.Kind()
-		}
-		if sliceElemKind == reflect.Map {
-			return MapToMaps(params, pointer, mapping...)
-		}
-		return Structs(params, pointer, mapping...)
-	default:
-		return Struct(params, pointer, mapping...)
+	if len(paramKeyToAttrMap) > 0 {
+		option.ParamKeyToAttrMap = paramKeyToAttrMap[0]
 	}
+	return defaultConverter.Scan(srcValue, dstPointer, option)
 }
 
-// ScanDeep automatically calls StructDeep or StructsDeep function according to the type of
-// parameter `pointer` to implement the converting..
-// It calls function StructDeep if `pointer` is type of *struct/**struct to do the converting.
-// It calls function StructsDeep if `pointer` is type of *[]struct/*[]*struct to do the converting.
-// Deprecated, use Scan instead.
-func ScanDeep(params interface{}, pointer interface{}, mapping ...map[string]string) (err error) {
-	t := reflect.TypeOf(pointer)
-	k := t.Kind()
-	if k != reflect.Ptr {
-		return gerror.NewCodef(gerror.CodeInvalidParameter, "params should be type of pointer, but got: %v", k)
-	}
-	switch t.Elem().Kind() {
-	case reflect.Array, reflect.Slice:
-		return StructsDeep(params, pointer, mapping...)
-	default:
-		return StructDeep(params, pointer, mapping...)
-	}
+// ScanWithOptions automatically checks the type of `dstPointer` and converts `srcValue` to `dstPointer`.
+// It is the same as Scan function, but accepts one or more ScanOption values for additional conversion control.
+//
+// When using ScanWithOptions, the term "omit" means that the assignment from the source to the destination
+// is skipped, so the existing value in the destination field is preserved.
+//
+//   - option.OmitEmpty, when set to true, skips assignment of empty source values (for example: empty strings,
+//     zero numeric values, zero time values, empty slices or maps), preserving any existing non-empty values
+//     in the destination.
+//
+//   - option.OmitNil, when set to true, skips assignment of nil source values, preserving the existing values
+//     in the destination when the source contains nil.
+//
+// Example:
+//
+//	type User struct {
+//	    Name  string
+//	    Email string
+//	}
+//
+//	dst := &User{Name: "Alice", Email: "alice@example.com"}
+//	src := map[string]any{
+//	    "Name":  "",
+//	    "Email": nil,
+//	}
+//
+//	// With OmitEmpty and OmitNil, empty and nil values in src will not overwrite dst.
+//	err := ScanWithOptions(src, dst, ScanOption{OmitEmpty: true, OmitNil: true})
+func ScanWithOptions(srcValue any, dstPointer any, option ...ScanOption) (err error) {
+	return defaultConverter.Scan(srcValue, dstPointer, option...)
 }

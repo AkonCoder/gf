@@ -9,7 +9,8 @@ package gproc
 import (
 	"os"
 
-	"github.com/gogf/gf/container/gmap"
+	"github.com/gogf/gf/v2/container/gmap"
+	"github.com/gogf/gf/v2/errors/gerror"
 )
 
 // Manager is a process manager maintaining multiple processes.
@@ -60,7 +61,7 @@ func (m *Manager) RemoveProcess(pid int) {
 // Processes retrieves and returns all processes in current manager.
 func (m *Manager) Processes() []*Process {
 	processes := make([]*Process, 0)
-	m.processes.RLockFunc(func(m map[int]interface{}) {
+	m.processes.RLockFunc(func(m map[int]any) {
 		for _, v := range m {
 			processes = append(processes, v.(*Process))
 		}
@@ -78,7 +79,7 @@ func (m *Manager) WaitAll() {
 	processes := m.Processes()
 	if len(processes) > 0 {
 		for _, p := range processes {
-			p.Wait()
+			_ = p.Wait()
 		}
 	}
 }
@@ -97,6 +98,7 @@ func (m *Manager) KillAll() error {
 func (m *Manager) SignalAll(sig os.Signal) error {
 	for _, p := range m.Processes() {
 		if err := p.Signal(sig); err != nil {
+			err = gerror.Wrapf(err, `send signal to process failed for pid "%d" with signal "%s"`, p.Process.Pid, sig)
 			return err
 		}
 	}
@@ -106,7 +108,7 @@ func (m *Manager) SignalAll(sig os.Signal) error {
 // Send sends data bytes to all processes in current manager.
 func (m *Manager) Send(data []byte) {
 	for _, p := range m.Processes() {
-		p.Send(data)
+		_ = p.Send(data)
 	}
 }
 

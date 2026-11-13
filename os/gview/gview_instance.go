@@ -6,26 +6,27 @@
 
 package gview
 
-import "github.com/gogf/gf/container/gmap"
+import "github.com/gogf/gf/v2/container/gmap"
 
 const (
-	// Default group name for instance usage.
+	// DefaultName is the default group name for instance usage.
 	DefaultName = "default"
 )
 
 var (
+	checker = func(v *View) bool { return v == nil }
 	// Instances map.
-	instances = gmap.NewStrAnyMap(true)
+	instances = gmap.NewKVMapWithChecker[string, *View](checker, true)
 )
 
 // Instance returns an instance of View with default settings.
-// The parameter <name> is the name for the instance.
+// The parameter `name` is the name for the instance.
 func Instance(name ...string) *View {
 	key := DefaultName
 	if len(name) > 0 && name[0] != "" {
 		key = name[0]
 	}
-	return instances.GetOrSetFuncLock(key, func() interface{} {
+	return instances.GetOrSetFuncLock(key, func() *View {
 		return New()
-	}).(*View)
+	})
 }

@@ -10,7 +10,7 @@ import (
 	json2 "encoding/json"
 	"testing"
 
-	"github.com/gogf/gf/encoding/gjson"
+	"github.com/gogf/gf/v2/encoding/gjson"
 )
 
 var (
@@ -46,14 +46,14 @@ func Benchmark_Get_Complicated_Json(b *testing.B) {
 
 func Benchmark_Stdlib_Json_Unmarshal_Simple_Json(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		var m map[string]interface{}
+		var m map[string]any
 		json2.Unmarshal([]byte(jsonStr1), &m)
 	}
 }
 
 func Benchmark_Stdlib_Json_Unmarshal_Complicated_Json(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		var m map[string]interface{}
+		var m map[string]any
 		json2.Unmarshal([]byte(jsonStr2), &m)
 	}
 }

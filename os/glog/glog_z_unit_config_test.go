@@ -8,22 +8,23 @@ package glog
 
 import (
 	"bytes"
-	"github.com/gogf/gf/test/gtest"
 	"strings"
 	"testing"
+
+	"github.com/gogf/gf/v2/test/gtest"
 )
 
 func Test_SetConfigWithMap(t *testing.T) {
 	gtest.C(t, func(t *gtest.T) {
 		l := New()
-		m := map[string]interface{}{
+		m := map[string]any{
 			"path":     "/var/log",
 			"level":    "all",
 			"stdout":   false,
 			"StStatus": 0,
 		}
 		err := l.SetConfigWithMap(m)
-		t.Assert(err, nil)
+		t.AssertNil(err)
 		t.Assert(l.config.Path, m["path"])
 		t.Assert(l.config.Level, LEVEL_ALL)
 		t.Assert(l.config.StdoutPrint, m["stdout"])
@@ -34,16 +35,16 @@ func Test_SetConfigWithMap_LevelStr(t *testing.T) {
 	gtest.C(t, func(t *gtest.T) {
 		buffer := bytes.NewBuffer(nil)
 		l := New()
-		m := map[string]interface{}{
+		m := map[string]any{
 			"level": "all",
 		}
 		err := l.SetConfigWithMap(m)
-		t.Assert(err, nil)
+		t.AssertNil(err)
 
 		l.SetWriter(buffer)
 
-		l.Debug("test")
-		l.Warning("test")
+		l.Debug(ctx, "test")
+		l.Warning(ctx, "test")
 		t.Assert(strings.Contains(buffer.String(), "DEBU"), true)
 		t.Assert(strings.Contains(buffer.String(), "WARN"), true)
 	})
@@ -51,14 +52,14 @@ func Test_SetConfigWithMap_LevelStr(t *testing.T) {
 	gtest.C(t, func(t *gtest.T) {
 		buffer := bytes.NewBuffer(nil)
 		l := New()
-		m := map[string]interface{}{
+		m := map[string]any{
 			"level": "warn",
 		}
 		err := l.SetConfigWithMap(m)
-		t.Assert(err, nil)
+		t.AssertNil(err)
 		l.SetWriter(buffer)
-		l.Debug("test")
-		l.Warning("test")
+		l.Debug(ctx, "test")
+		l.Warning(ctx, "test")
 		t.Assert(strings.Contains(buffer.String(), "DEBU"), false)
 		t.Assert(strings.Contains(buffer.String(), "WARN"), true)
 	})

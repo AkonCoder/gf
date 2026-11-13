@@ -4,13 +4,16 @@
 // If a copy of the MIT was not distributed with this file,
 // You can obtain one at https://github.com/gogf/gf.
 
-// Package gi18n implements internationalization and localization.
 package gi18n
 
-import "context"
+import (
+	"context"
+
+	"github.com/gogf/gf/v2/os/gctx"
+)
 
 const (
-	ctxLanguage = "I18nLanguage"
+	ctxLanguage gctx.StrKey = "I18nLanguage"
 )
 
 // WithLanguage append language setting to the context and returns a new context.

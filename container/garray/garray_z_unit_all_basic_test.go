@@ -9,13 +9,13 @@
 package garray_test
 
 import (
-	"github.com/gogf/gf/util/gutil"
 	"strings"
 	"testing"
 
-	"github.com/gogf/gf/container/garray"
-	"github.com/gogf/gf/test/gtest"
-	"github.com/gogf/gf/util/gconv"
+	"github.com/gogf/gf/v2/container/garray"
+	"github.com/gogf/gf/v2/test/gtest"
+	"github.com/gogf/gf/v2/util/gconv"
+	"github.com/gogf/gf/v2/util/gutil"
 )
 
 func Test_Array_Var(t *testing.T) {
@@ -131,7 +131,7 @@ func Test_SortedStrArray2(t *testing.T) {
 func Test_SortedArray1(t *testing.T) {
 	gtest.C(t, func(t *gtest.T) {
 		expect := []string{"0", "1", "10", "2", "3", "4", "5", "6", "7", "8", "9"}
-		array := garray.NewSortedArray(func(v1, v2 interface{}) int {
+		array := garray.NewSortedArray(func(v1, v2 any) int {
 			return strings.Compare(gconv.String(v1), gconv.String(v2))
 		})
 		for i := 10; i > -1; i-- {
@@ -144,7 +144,7 @@ func Test_SortedArray1(t *testing.T) {
 func Test_SortedArray2(t *testing.T) {
 	gtest.C(t, func(t *gtest.T) {
 		expect := []string{"0", "1", "10", "2", "3", "4", "5", "6", "7", "8", "9"}
-		func1 := func(v1, v2 interface{}) int {
+		func1 := func(v1, v2 any) int {
 			return strings.Compare(gconv.String(v1), gconv.String(v2))
 		}
 		array := garray.NewSortedArray(func1)
@@ -161,7 +161,7 @@ func Test_SortedArray2(t *testing.T) {
 
 func TestNewFromCopy(t *testing.T) {
 	gtest.C(t, func(t *gtest.T) {
-		a1 := []interface{}{"100", "200", "300", "400", "500", "600"}
+		a1 := []any{"100", "200", "300", "400", "500", "600"}
 		array1 := garray.NewFromCopy(a1)
 		t.AssertIN(array1.PopRands(2), a1)
 		t.Assert(len(array1.PopRands(1)), 1)

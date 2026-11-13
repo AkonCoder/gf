@@ -8,10 +8,12 @@
 package ghttp
 
 import (
-	"github.com/gogf/gf/text/gstr"
-	"github.com/gogf/gf/util/gconv"
 	"net/http"
 	"net/url"
+	"strings"
+
+	"github.com/gogf/gf/v2/text/gstr"
+	"github.com/gogf/gf/v2/util/gconv"
 )
 
 // CORSOptions is the options for CORS feature.
@@ -28,8 +30,17 @@ type CORSOptions struct {
 
 var (
 	// defaultAllowHeaders is the default allowed headers for CORS.
-	// It's defined another map for better header key searching performance.
-	defaultAllowHeaders    = "Origin,Content-Type,Accept,User-Agent,Cookie,Authorization,X-Auth-Token,X-Requested-With"
+	// It defined another map for better header key searching performance.
+	defaultAllowHeaders = strings.Join([]string{
+		HeaderOrigin,
+		HeaderContentType,
+		headerAccept,
+		headerUserAgent,
+		headerCookie,
+		HeaderAuthorization,
+		headerXAuthToken,
+		HeaderXRequestedWith,
+	}, ",")
 	defaultAllowHeadersMap = make(map[string]struct{})
 )
 
@@ -51,7 +62,7 @@ func (r *Response) DefaultCORSOptions() CORSOptions {
 		MaxAge:           3628800,
 	}
 	// Allow all client's custom headers in default.
-	if headers := r.Request.Header.Get("Access-Control-Request-Headers"); headers != "" {
+	if headers := r.Request.Header.Get(HeaderAccessControlRequestHeaders); headers != "" {
 		array := gstr.SplitAndTrim(headers, ",")
 		for _, header := range array {
 			if _, ok := defaultAllowHeadersMap[header]; !ok {
@@ -60,11 +71,11 @@ func (r *Response) DefaultCORSOptions() CORSOptions {
 		}
 	}
 	// Allow all anywhere origin in default.
-	if origin := r.Request.Header.Get("Origin"); origin != "" {
+	if origin := r.Request.Header.Get(HeaderOrigin); origin != "" {
 		options.AllowOrigin = origin
 	} else if referer := r.Request.Referer(); referer != "" {
-		if p := gstr.PosR(referer, "/", 6); p != -1 {
-			options.AllowOrigin = referer[:p]
+		if ref, err := url.Parse(referer); err == nil {
+			options.AllowOrigin = ref.Scheme + "://" + ref.Host
 		} else {
 			options.AllowOrigin = referer
 		}
@@ -76,27 +87,27 @@ func (r *Response) DefaultCORSOptions() CORSOptions {
 // See https://www.w3.org/TR/cors/ .
 func (r *Response) CORS(options CORSOptions) {
 	if r.CORSAllowedOrigin(options) {
-		r.Header().Set("Access-Control-Allow-Origin", options.AllowOrigin)
+		r.Header().Set(HeaderAccessControlAllowOrigin, options.AllowOrigin)
 	}
 	if options.AllowCredentials != "" {
-		r.Header().Set("Access-Control-Allow-Credentials", options.AllowCredentials)
+		r.Header().Set(HeaderAccessControlAllowCredentials, options.AllowCredentials)
 	}
 	if options.ExposeHeaders != "" {
-		r.Header().Set("Access-Control-Expose-Headers", options.ExposeHeaders)
+		r.Header().Set(HeaderAccessControlExposeHeaders, options.ExposeHeaders)
 	}
 	if options.MaxAge != 0 {
-		r.Header().Set("Access-Control-Max-Age", gconv.String(options.MaxAge))
+		r.Header().Set(HeaderAccessControlMaxAge, gconv.String(options.MaxAge))
 	}
 	if options.AllowMethods != "" {
-		r.Header().Set("Access-Control-Allow-Methods", options.AllowMethods)
+		r.Header().Set(HeaderAccessControlAllowMethods, options.AllowMethods)
 	}
 	if options.AllowHeaders != "" {
-		r.Header().Set("Access-Control-Allow-Headers", options.AllowHeaders)
+		r.Header().Set(HeaderAccessControlAllowHeaders, options.AllowHeaders)
 	}
 	// No continue service handling if it's OPTIONS request.
 	// Note that there's special checks in previous router searching,
 	// so if it goes to here it means there's already serving handler exist.
-	if gstr.Equal(r.Request.Method, "OPTIONS") {
+	if gstr.Equal(r.Request.Method, http.MethodOptions) {
 		if r.Status == 0 {
 			r.Status = http.StatusOK
 		}
@@ -105,12 +116,12 @@ func (r *Response) CORS(options CORSOptions) {
 	}
 }
 
-// CORSAllowed checks whether the current request origin is allowed cross-domain.
+// CORSAllowedOrigin CORSAllowed checks whether the current request origin is allowed cross-domain.
 func (r *Response) CORSAllowedOrigin(options CORSOptions) bool {
 	if options.AllowDomain == nil {
 		return true
 	}
-	origin := r.Request.Header.Get("Origin")
+	origin := r.Request.Header.Get(HeaderOrigin)
 	if origin == "" {
 		return true
 	}
